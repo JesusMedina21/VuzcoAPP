@@ -1,6 +1,6 @@
 from django.db import models
 from django.contrib.auth.models import AbstractUser
-from .mixins import AutoCleanMongoMixin, ProfileCloudinaryStorage, ServiciosCloudinaryStorage
+from .mixins import *
 from django.db.models.signals import pre_save
 from django.dispatch import receiver
 import logging # Importa logging
@@ -13,10 +13,12 @@ from datetime import datetime, timedelta
 
 from django.core.validators import MinValueValidator, MaxValueValidator # Importa los validadores
 
+# Redefinimos el método para que no guarde nada en la coleccion django_admin_log
+def disable_log_entry_save(*args, **kwargs):
+    pass
+
 class User(AutoCleanMongoMixin, AbstractUser):
-    #aqui modifico el username para que sea obligatorio pero no unico, 
-    #es decir que pueda registrar 2 usuarios con el mismo nombre
-    username = models.CharField(max_length=150, unique=False, blank=False, null=False)
+    username = models.CharField(max_length=150, unique=True, blank=True, null=True)
     #aqui tengo que indicar por exigencias de Django, que al nombre ya no ser unico
     #lo que va a identificar el usuario como ID seria el email, por lo tanto tengo que
     #sobreescribir el campo email y e identificar el email en USERNAME_FIELD y colocar el
@@ -24,40 +26,89 @@ class User(AutoCleanMongoMixin, AbstractUser):
     email = models.EmailField(unique=True)
     pending_email = models.EmailField(blank=True, null=True)  # Nuevo campo
     profile_imagen = models.ImageField(upload_to='profile_images/', storage=ProfileCloudinaryStorage(),  null=True, blank=True)
+    banner_imagen = models.ImageField(upload_to='banner_images/', storage=BannerCloudinaryStorage(),  null=True, blank=True)
     #Biometric es el campo que va a necesitar los usuarios para almacenar la huella
     #y pueda iniciar sesion con la huella, biometric guarda sus credenciales como
     #email y password
     # 🔥 NUEVOS CAMPOS DE GEOLOCALIZACIÓN (para todos los usuarios)
     ubicacion_coordenadas = models.JSONField(null=True, blank=True, default=None)
     biometric = models.CharField(max_length=255, null=True, blank=True)
-    barberia = models.JSONField(null=True, blank=True, default=None)
+    # Ciudad resuelta por geocoding inverso (persistida para evitar llamadas repetidas)
+    ciudad_coordenadas = models.CharField(max_length=200, null=True, blank=True, default=None)
+    negocio = models.JSONField(null=True, blank=True, default=None)
 
-    USERNAME_FIELD = 'email' 
-    REQUIRED_FIELDS = ['username']
+    USERNAME_FIELD = 'email'
+    # Al dejar esta lista vacía, Django NO pedirá nada más al crear un usuario 
+    REQUIRED_FIELDS = []
 
-    CLEAN_FIELDS = ['first_name', 'last_name', 'biometric', 'barberia', 'pending_email', 'profile_imagen', 'ubicacion_coordenadas']
+    CLEAN_FIELDS = ['username', 'first_name', 'last_name', 'biometric', 'negocio', 'pending_email', 'profile_imagen', 'banner_imagen', 'ubicacion_coordenadas', 'ciudad_coordenadas']
     
 
     def save(self, *args, **kwargs):
+        # ⚠️ Normalizar username para que nunca sea `None`.
+        # MongoDB schema exige cadena y no acepta null, así que transformamos
+        # None -> cadena vacía antes de guardar.
+        if self.username is None:
+            self.username = ''
+
+        # normalizar campos de imagen para evitar cadenas vacías
         if not self.profile_imagen:  # Si está vacío
             self.profile_imagen = None  # Django lo guarda como null en vez de ""
+        if not self.banner_imagen:
+            self.banner_imagen = None
         super().save(*args, **kwargs)
         self.mongo_clean()
+
+    def delete(self, *args, **kwargs):
+        """Siempre limpiar las imágenes alojadas en Cloudinary.
+
+        El admin ya tiene duplicados, pero conviene que el propio modelo
+        realice la eliminación para cubrir cualquier otro sitio donde se
+        borre un usuario/negocio.
+        """
+        try:
+            # Se importa aquí para evitar dependencias de circularidad
+            import cloudinary.uploader
+            from django.conf import settings
+
+            # perfil
+            if self.profile_imagen:
+                public_id = str(self.profile_imagen.name)
+                cloudinary.uploader.destroy(
+                    public_id,
+                    cloud_name=settings.CLOUDINARY_STORAGE['CLOUD_NAME'],
+                    api_key=settings.CLOUDINARY_STORAGE['API_KEY'],
+                    api_secret=settings.CLOUDINARY_STORAGE['API_SECRET'],
+                )
+            # banner
+            if self.banner_imagen:
+                public_id = str(self.banner_imagen.name)
+                cloudinary.uploader.destroy(
+                    public_id,
+                    cloud_name=settings.CLOUDINARY_BANNER['CLOUD_NAME'],
+                    api_key=settings.CLOUDINARY_BANNER['API_KEY'],
+                    api_secret=settings.CLOUDINARY_BANNER['API_SECRET'],
+                )
+        except Exception:
+            # no queremos que un error en Cloudinary impida el borrado
+            logger.exception("Error al limpiar imágenes en delete() del usuario")
+        super().delete(*args, **kwargs)
 
 
 
     class Meta:
         verbose_name = 'Usuario'
         verbose_name_plural = 'Usuarios'
+        ordering = ['-id'] 
         # Asegúrate de que no haya restricciones de unicidad
         unique_together = ()  
 
 class Comment(models.Model):
-    barberia = models.ForeignKey(
+    negocio = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
         related_name='comments_received',
-        limit_choices_to={'barberia__isnull': False}
+        limit_choices_to={'negocio__isnull': False}
     )
     
     cliente = models.ForeignKey(
@@ -78,87 +129,31 @@ class Comment(models.Model):
     class Meta:
         verbose_name = 'Comentario'
         verbose_name_plural = 'Comentarios'
-        unique_together = ('barberia', 'cliente')
+        unique_together = ('negocio', 'cliente')
         ordering = ['-date']
 
     def __str__(self):
-        # Primero, intenta obtener el nombre de la barbería del JSONField
-        barber_name = self.barberia.username
-        if self.barberia.barberia:
+        # Primero, intenta obtener el nombre del negocio  del JSONField
+        business_name = self.negocio.username
+        if self.negocio.negocio:
             try:
-                # Accede al primer elemento de la lista y luego a la clave 'name_barber'
-                barber_name = self.barberia.barberia[0].get('name_barber', self.barberia.username)
+                # Accede al primer elemento de la lista y luego a la clave 'name_business'
+                business_name = self.negocio.negocio[0].get('name_business', self.negocio.username)
             except (KeyError, IndexError):
                 # En caso de que no exista la clave o el índice, usa el nombre de usuario
                 pass
 
-        return f"Comentario del cliente {self.cliente.first_name} {self.cliente.last_name}, para la Barberia {barber_name} - Calificacion: {self.rating}"
-
-class Turnos(models.Model):
-    barberia = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.CASCADE,
-        limit_choices_to={'barberia__isnull': False},
-        related_name='barberia_turno',
-    )
-    cliente = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.CASCADE,
-        related_name='cliente_turno',
-    )
-    turno = models.IntegerField(
-        validators=[
-            MinValueValidator(1, message='El turno mínimo es 1.'),
-            MaxValueValidator(100, message='El turno máximo es 100.')
-        ]
-    )
-    fecha_turno = models.DateField()
-    estado = models.CharField(max_length=1, choices=(
-        ('R', 'Reservado'),
-        ('C', 'Cancelado'),
-    ), default='R') # Añade 'default' aquí
-    @staticmethod
-    def calcular_fecha_turno(dia_seleccionado):
-        """Devuelve la fecha del próximo día seleccionado, ajustando para la hora de cierre."""
-        today = datetime.now().date()
-        now = datetime.now().time()
-
-        dias = {
-            'lunes': 0, 'martes': 1, 'miercoles': 2, 'jueves': 3, 'viernes': 4, 'sabado': 5, 'domingo': 6
-        }
-        
-        dia_del_week_int = dias.get(dia_seleccionado.lower())
-        
-        if dia_del_week_int is None:
-            raise ValueError("Día de la semana no válido.")
-
-        dias_a_sumar = (dia_del_week_int - today.weekday() + 7) % 7
-        if dias_a_sumar == 0:
-            # Si el día seleccionado es hoy, revisa si ya pasó la hora de cierre
-            # Esta lógica se manejará en el serializador.
-            return today
-        
-        return today + timedelta(days=dias_a_sumar)
-    
-
-    class Meta:
-        verbose_name = 'Turno'
-        verbose_name_plural = 'Turnos'
-        unique_together = ('barberia', 'turno', 'fecha_turno')  # Asegura que no haya duplicados
-        ordering = ['fecha_turno', 'turno']
-
-    def __str__(self):
-        return f"Turno  N° {self.turno} para el cliente {self.cliente.first_name} {self.cliente.last_name}, en la Barberia {self.barberia.username}. Estado del turno: {self.get_estado_display()}"
-
+        return f"Comentario del cliente {self.cliente.first_name} {self.cliente.last_name}, para el negocio {business_name} - Calificacion: {self.rating}"
 
 class Servicio(AutoCleanMongoMixin, models.Model):
     
-    barberia = models.ForeignKey(
+    negocio = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
-        related_name='barberia_servicio',
-        limit_choices_to={'barberia__isnull': False}
+        related_name='negocio_servicio',
+        limit_choices_to={'negocio__isnull': False}
     )
+    titulo = models.TextField(null=False, blank=False)
     description = models.TextField()
     imagen_urls = models.JSONField(default=list)
     precio = models.DecimalField(max_digits=10, decimal_places=2, null=True,blank=True)# Opciones de moneda
@@ -200,6 +195,7 @@ class Servicio(AutoCleanMongoMixin, models.Model):
     class Meta:
         verbose_name = 'Servicio'
         verbose_name_plural = 'Servicios'
+        ordering = ['-id'] 
 
     
     def save(self, *args, **kwargs):
@@ -207,14 +203,44 @@ class Servicio(AutoCleanMongoMixin, models.Model):
         self.mongo_clean()
     
     def __str__(self):
-        # Primero, intenta obtener el nombre de la barbería del JSONField
-        barber_name = self.barberia.username
-        if self.barberia.barberia:
+        # Primero, intenta obtener el nombre de el negocio del JSONField
+        business_name = self.negocio.username
+        if self.negocio.negocio:
             try:
-                # Accede al primer elemento de la lista y luego a la clave 'name_barber'
-                barber_name = self.barberia.barberia[0].get('name_barber', self.barberia.username)
+                # Accede al primer elemento de la lista y luego a la clave 'name_business'
+                business_name = self.negocio.negocio[0].get('name_business', self.negocio.username)
             except (KeyError, IndexError):
                 # En caso de que no exista la clave o el índice, usa el nombre de usuario
                 pass
 
-        return f"Servicio: {self.description}. De la Barberia: {barber_name}"
+        return f"Servicio: {self.description}. Del negocio: {business_name}"
+
+
+class ChatMessage(models.Model):
+    emisor = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='chat_messages',
+    )
+    receptor = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='received_messages'
+    )
+    mensaje_texto = models.TextField()
+    hora_mensaje = models.DateTimeField(auto_now_add=True)
+    visto = models.BooleanField(default=False)
+
+    class Meta:
+        verbose_name = 'Chat'
+        verbose_name_plural = 'Chat'
+        ordering = ['hora_mensaje']
+
+    def __str__(self):
+        emisor = self.emisor or 'Desconocido'
+        receptor = self.receptor or 'Desconocido'
+        return f"[{self.hora_mensaje}] {emisor} -> {receptor}: {self.mensaje_texto[:50]}"

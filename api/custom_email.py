@@ -11,11 +11,11 @@ class CreateUser(email.ActivationEmail):
     def get_context_data(self):
         context = super().get_context_data()
         context.update({
-            'site_name': "Barberstein",
+            'site_name': "Vuzco",
             'domain': settings.DOMAIN,
             'protocol': settings.PROTOCOL,
-            'support_email': "soporte@barberstein.com",
-            'app_name': "Barberstein",
+            'support_email': "info@vuzco.ebiru.tech",
+            'app_name': "Vuzco",
             'contact_phone': "+123456789",
         })
         return context
@@ -50,9 +50,9 @@ class CustomActivationConfirmEmail(email.ActivationEmail):
     def get_context_data(self):
         context = super().get_context_data()
         context.update({
-            'site_name': "Barberstein",
-            'support_email': "soporte@barberstein.com",
-            'app_name': "Barberstein",
+            'site_name': "Vuzco",
+            'support_email': "info@vuzco.ebiru.tech",
+            'app_name': "Vuzco",
             'contact_phone': "+123456789",
         })
         return context
@@ -80,11 +80,11 @@ class CustomActivationNewEmail(email.ActivationEmail):
     def get_context_data(self):
         context = super().get_context_data()
         context.update({
-            'site_name': "Barberstein",
+            'site_name': "Vuzco",
             'domain': settings.DOMAIN,
             'protocol': settings.PROTOCOL,
-            'support_email': "soporte@barberstein.com",
-            'app_name': "Barberstein",
+            'support_email': "info@vuzco.ebiru.tech",
+            'app_name': "Vuzco",
             'contact_phone': "+123456789",
             'new_email': self.context.get('new_email', ''),
             'email': self.context.get('new_email', '')  # Añade esto para usar {{ email }} en tu template
@@ -120,11 +120,11 @@ class CustomUsernameResetEmail(email.UsernameResetEmail):
     def get_context_data(self):
         context = super().get_context_data()
         context.update({
-            'site_name': "Barberstein",
+            'site_name': "Vuzco",
             'domain': settings.DOMAIN,
             'protocol': settings.PROTOCOL,
-            'support_email': "soporte@barberstein.com",
-            'app_name': "Barberstein",
+            'support_email': "info@vuzco.ebiru.tech",
+            'app_name': "Vuzco",
             'contact_phone': "+123456789",
         })
         return context
@@ -159,11 +159,11 @@ class CustomEmailReset(email.ActivationEmail):
     def get_context_data(self):
         context = super().get_context_data()
         context.update({
-            'site_name': "Barberstein",
+            'site_name': "Vuzco",
             'domain': settings.DOMAIN,
             'protocol': settings.PROTOCOL,
-            'support_email': "soporte@barberstein.com",
-            'app_name': "Barberstein",
+            'support_email': "info@vuzco.ebiru.tech",
+            'app_name': "Vuzco",
             'contact_phone': "+123456789",
             'activation_url': f"{context['protocol']}://{context['domain']}/confirm-email/{context['uid']}/{context['token']}/"
         })
@@ -202,11 +202,11 @@ class CustomOldEmailNotification(email.ActivationEmail):
     def get_context_data(self):
         context = super().get_context_data()
         context.update({
-            'site_name': "Barberstein",
+            'site_name': "Vuzco",
             'domain': settings.DOMAIN,
             'protocol': settings.PROTOCOL,
-            'support_email': "soporte@barberstein.com",
-            'app_name': "Barberstein",
+            'support_email': "info@vuzco.ebiru.tech",
+            'app_name': "Vuzco",
             'contact_phone': "+123456789",
             'new_email': self.context.get('new_email', ''),
             'old_email': self.context.get('old_email', '')
@@ -242,11 +242,11 @@ class CustomPasswordResetEmail(email.PasswordResetEmail):
     def get_context_data(self):
         context = super().get_context_data()
         context.update({
-            'site_name': "Barberstein",
+            'site_name': "Vuzco",
             'domain': settings.DOMAIN,
             'protocol': settings.PROTOCOL,
-            'support_email': "soporte@barberstein.com",
-            'app_name': "Barberstein",
+            'support_email': "info@vuzco.ebiru.tech",
+            'app_name': "Vuzco",
             'contact_phone': "+123456789",
         })
         return context
@@ -281,11 +281,11 @@ class CustomPasswordConfirmEmail(email.PasswordChangedConfirmationEmail):
     def get_context_data(self):
         context = super().get_context_data()
         context.update({
-            'site_name': "Barberstein",
+            'site_name': "Vuzco",
             'domain': settings.DOMAIN,
             'protocol': settings.PROTOCOL,
-            'support_email': "soporte@barberstein.com",
-            'app_name': "Barberstein",
+            'support_email': "info@vuzco.ebiru.tech",
+            'app_name': "Vuzco",
             'contact_phone': "+123456789",
         })
         return context

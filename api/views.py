@@ -1,14 +1,14 @@
 from django.http import Http404
 from rest_framework import viewsets, status, generics
 from api.serializers import *
-import os
-from datetime import date, timedelta
+from api.serializers import _is_business_user
 
-import json
+from django.shortcuts import render
+from django.views import View
 # from django.contrib.auth.models import User # Modelo original
 from api.models import *
 # JWT
-from rest_framework.permissions import IsAuthenticated, AllowAny
+from rest_framework.permissions import IsAuthenticated, AllowAny, IsAdminUser
 
 #DRF SPECTACULAR
 from drf_spectacular.utils import extend_schema, extend_schema_view, OpenApiExample, OpenApiParameter
@@ -36,21 +36,14 @@ from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
 from django.utils.encoding import force_bytes, force_str
 from django.db import transaction
 from rest_framework.parsers import JSONParser, FormParser, MultiPartParser
-from querystring_parser import parser
 import re
 from collections import defaultdict
+
+from .pagination import * 
+from drf_spectacular.types import OpenApiTypes
+
 VERCEL_API_KEY_SECRET = "ae24638ce08a743c58aea8a35931e76464d8d0a15fed29fc696cfe2bf9806f2f"
 
-import datetime
-
-# DRF SPECTACULAR - IMPORTACIONES COMPLETAS
-from drf_spectacular.utils import (
-    extend_schema, 
-    extend_schema_view, 
-    OpenApiExample, 
-    OpenApiParameter
-)
-from drf_spectacular.types import OpenApiTypes  # ← IMPORTANTE
 #################################################AUTH
 
 @extend_schema(
@@ -107,20 +100,94 @@ class ConfirmarEmail(APIView):
 )
 class CustomUserViewSet(UserViewSet):
     def activation(self, request, *args, **kwargs):
-        # Lógica de activación manual
+        # Validar datos de activación y obtener usuario
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         user = serializer.user
+
+        # Marcar cuenta como activa
         user.is_active = True
         user.save()
 
-        # Enviar correo personalizado
+        # Enviar correo personalizado de confirmación (opcional)
         CustomActivationConfirmEmail(context={'user': user}).send(to=user.email)
 
-        return Response(
-            {"detail": "¡Cuenta activada con éxito! Bienvenido a Barberstein."},
-            status=status.HTTP_200_OK
-        )
+        # Generar tokens JWT exactamente igual que en el login
+        refresh = RefreshToken.for_user(user)
+        tipo_usuario = "negocio" if user.negocio else "cliente"
+
+        return Response({
+            'refresh': str(refresh),
+            'token': str(refresh.access_token),
+            'id': str(user.id),
+            'tipo_usuario': tipo_usuario,
+            'detail': "¡Cuenta activada con éxito! Bienvenido a Vuzco."
+        }, status=status.HTTP_200_OK)
+
+    @extend_schema(
+        description="Solicita el cambio de email. Si el correo existe se envía un enlace y se devuelve un mensaje de confirmación.",
+        responses={200: OpenApiTypes.OBJECT},
+        request=OpenApiTypes.OBJECT,
+        examples=[
+            OpenApiExample(
+                'Ejemplo de solicitud',
+                value={"email": "string"}
+            )
+        ]
+    )
+    def reset_username(self, request, *args, **kwargs):
+        """Personalizamos la respuesta del reset de email username field.
+
+        Djoser devolvía 204 con contenido vacío; nosotros queremos un mensaje
+        amigable para el cliente.
+        """
+        resp = super().reset_username(request, *args, **kwargs)
+        if resp.status_code == status.HTTP_204_NO_CONTENT:
+            return Response(
+                {"detail": "Se ha enviado un enlace a tu email, abre el enlace para poder seguir con el cambio."},
+                status=status.HTTP_200_OK,
+            )
+        return resp
+
+    @extend_schema(
+        description="Solicita el cambio de contraseña; envía un correo con enlace y responde con mensaje de confirmación.",
+        responses={200: OpenApiTypes.OBJECT},
+        request=OpenApiTypes.OBJECT,
+        examples=[
+            OpenApiExample(
+                'Ejemplo de solicitud',
+                value={"email": "string"}
+            )
+        ]
+    )
+    def reset_password(self, request, *args, **kwargs):
+        resp = super().reset_password(request, *args, **kwargs)
+        if resp.status_code == status.HTTP_204_NO_CONTENT:
+            return Response(
+                {"detail": "Se envió un mensaje a su correo para poder cambiar la contraseña, abra el enlace para poder seguir con el cambio."},
+                status=status.HTTP_200_OK,
+            )
+        return resp
+
+    @extend_schema(
+        description="Confirma el cambio de contraseña. Devuelve texto de éxito.",
+        responses={200: OpenApiTypes.OBJECT},
+        request=OpenApiTypes.OBJECT,
+        examples=[
+            OpenApiExample(
+                'Ejemplo de solicitud',
+                value={"uid": "string", "token": "string", "new_password": "string"}
+            )
+        ]
+    )
+    def reset_password_confirm(self, request, *args, **kwargs):
+        resp = super().reset_password_confirm(request, *args, **kwargs)
+        if resp.status_code == status.HTTP_204_NO_CONTENT:
+            return Response(
+                {"detail": "Su contraseña se ha cambiado exitosamente."},
+                status=status.HTTP_200_OK,
+            )
+        return resp
 @extend_schema(
     request=ActivarNuevoEmailSerializer,
     description='Confirma el nuevo email usando el UID y token del enlace'
@@ -177,6 +244,42 @@ class ActivarNuevoEmailView(APIView):
             {"detail": "Email cambiado exitosamente"},
             status=status.HTTP_200_OK
         )
+
+
+class OAuthErrorView(View):
+    template_name = 'oauth_error.html'
+    
+    def get(self, request, *args, **kwargs):
+        error_message = request.GET.get('message', 'No puede iniciar con Google porque ya se creó una cuenta')
+        return render(request, self.template_name, {'error_message': error_message})
+
+
+class GoogleOAuth2LoginDocsView(APIView):
+    permission_classes = [AllowAny]
+
+    @extend_schema(
+        tags=['auth'],
+        summary="No probar en SWAGGER, es solo para documentacion",
+        description="El endpoint REAL es: /api/auth/o/login/google-oauth2/?redirect_uri=enlace",
+        parameters=[
+            OpenApiParameter(
+                name='redirect_uri',
+                type=OpenApiTypes.URI,
+                location=OpenApiParameter.QUERY,
+                required=True,
+                description='URL de retorno después de autenticación de Google'
+            )
+        ],
+        responses={200: OpenApiTypes.OBJECT}
+    )
+    def get(self, request):
+        return Response(
+            {
+                'detail': 'Uso: /api/auth/o/login/google-oauth2/?redirect_uri=https://vuzco.vercel.app/'
+            },
+            status=status.HTTP_200_OK
+        )
+
 ###################################3333333#Cliente###############################################
 
 @extend_schema_view(
@@ -252,8 +355,9 @@ class ActivarNuevoEmailView(APIView):
 )
 
 class ClienteViewSet(viewsets.ModelViewSet):
-    queryset = User.objects.filter(barberia__isnull=True)
+    queryset = User.objects.filter(negocio__isnull=True)
     serializer_class = ClienteSerializer
+    pagination_class = ClientenegocioPagination 
 
     # 1. Indica que el campo de búsqueda es 'id' (el PK de tu modelo User)
     lookup_field = 'id' 
@@ -262,24 +366,25 @@ class ClienteViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
-    
-        if self.action == 'list':
+        action = getattr(self, 'action', None)
 
-        
-            return User.objects.filter((Q(barberia__isnull=True) | Q(barberia=[])) & Q(is_active=True) & Q(is_staff=False)  )
+        if action == 'list':
+            return User.objects.filter((Q(negocio__isnull=True) | Q(negocio=[])) & Q(is_active=True) & Q(is_staff=False)  )
     
         return super().get_queryset()
 
 
     def get_permissions(self):
-        if self.action == 'create': # Esta linea significa que el endpoint register lo pueda usar cualquiera
+        action = getattr(self, 'action', None)
+
+        if action == 'create': # Esta linea significa que el endpoint register lo pueda usar cualquiera
             return [AllowAny()]  # Permitir registro sin autenticación
-        elif self.action == 'list':
+        elif action == 'list':
             # Permitir que CUALQUIER usuario AUTENTICADO acceda a la lista
-            return [IsAuthenticated()] 
-        elif self.action in ['retrieve', 'partial_update', 'destroy']:  
+            return [IsAuthenticated()]
+        elif action in ['retrieve', 'partial_update', 'destroy']:
             # Permitir acceso a retrieve, update y destroy solo si el usuario está autenticado
-           
+
             # Y que el resto de metodos usen IsAuthenticated que significa JWT y el IsSelf que significa
             # que el mismo usuario pueda acceder a su propio recurso, ejemplo el usuario 1 solo acceda al endpoint 1 
             return [IsAuthenticated(), MiUsuarioLogin()]  # 👈 Requiere autenticación y que sea el mismo usuario 
@@ -318,9 +423,9 @@ class ClienteViewSet(viewsets.ModelViewSet):
         return self.update(request, *args, **kwargs) 
 
 
-###################################3333333#Barberias###############################################
+###################################3333333#negocios###############################################
 
-###Con este codigo puedo crear barberias con body multiplataform en Postman
+###Con este codigo puedo crear negocios con body multiplataform en Postman
 def dict_to_list(data):
     """
     Convierte dicts con claves '0','1','2' en listas reales.
@@ -354,14 +459,14 @@ def querydict_to_nested(data):
 
     return dict(result)
 
-@extend_schema(tags=['Barberias'], summary="Agregar campos de barberia a cuenta registrada con Google")
-class ConvertGoogleUserToBarberiaView(APIView):
+@extend_schema(tags=['Negocios'], summary="Agregar campos de negocio a cuenta registrada con Google")
+class ConvertGoogleUserTonegocioView(APIView):
     permission_classes = [IsAuthenticated]
     
     @extend_schema(
-        request=ConvertToBarberiaSerializer,
-        responses={200: BarberiaSerializer},
-        description='Convertir usuario de Google en barbería'
+        request=ConvertTonegocioSerializer,
+        responses={200: negocioSerializer},
+        description='Convertir usuario de Google en negocio'
     )
     def post(self, request):
         user = request.user
@@ -374,15 +479,15 @@ class ConvertGoogleUserToBarberiaView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
         
-        # Verificar que no sea ya una barbería
-        if user.barberia:
+        # Verificar que no sea ya un negocio
+        if user.negocio:
             return Response(
-                {"detail": "El usuario ya es una barbería"},
+                {"detail": "Esta cuenta ya es de un negocio"},
                 status=status.HTTP_400_BAD_REQUEST
             )
         
         # Usar el serializador específico para conversión
-        serializer = ConvertToBarberiaSerializer(
+        serializer = ConvertTonegocioSerializer(
             data=request.data,
             context={'user': user, 'request': request}
         )
@@ -390,28 +495,28 @@ class ConvertGoogleUserToBarberiaView(APIView):
         if serializer.is_valid():
             user = serializer.save()
             
-            # Devolver los datos con el serializador de barbería completo
-            barberia_serializer = BarberiaSerializer(user, context={'request': request})
-            return Response(barberia_serializer.data)
+            # Devolver los datos con el serializador del negocio completo
+            negocio_serializer = negocioSerializer(user, context={'request': request})
+            return Response(negocio_serializer.data)
         
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
     
 @extend_schema_view(
-    list=extend_schema(tags=['Barberias'],
-        summary="Obtener datos de todas las barberias",),
-    retrieve=extend_schema(tags=['Barberias'], 
-       summary="Obtener datos de mi barberia",),
+    list=extend_schema(tags=['Negocios'],
+        summary="Obtener datos de todas las negocios",),
+    retrieve=extend_schema(tags=['Negocios'], 
+       summary="Obtener datos de mi negocio",),
     create=extend_schema(
-        tags=['Barberias'],
-       summary="Crear cuenta de barberia",
+        tags=['Negocios'],
+       summary="Crear cuenta de negocio",
        request={
             'application/json': {
                 'type': 'object',
                 'properties': {
-                    'username': {'type': 'string'},
                     'email': {'type': 'string', 'format': 'email'},
                     'password': {'type': 'string'},
                     'profile_imagen': {'type': 'string'},
+                    'banner_imagen': {'type': 'string', 'format': 'binary'},
                     'ubicacion_coordenadas': { 
                         'type': 'object',
                         'properties': {
@@ -424,12 +529,14 @@ class ConvertGoogleUserToBarberiaView(APIView):
                         }
                     },
                     'biometric': {'type': 'string'},
-                    'barberia': {
+                    'negocio': {
                         'type': 'array',
                         'items': {
                             'type': 'object',
                             'properties': {
-                                'name_barber': {'type': 'string'},
+                                'name_business': {'type': 'string'},
+                                'city': {'type': 'string'},
+                                'descripcion': {'type': 'string'},
                                 'phone': {'type': 'string'},
                                 'address': {'type': 'string'},
                                 'horario': {
@@ -437,7 +544,6 @@ class ConvertGoogleUserToBarberiaView(APIView):
                                     'items': {
                                         'type': 'object',
                                         'properties': {
-                                            'turnos_max': {'type': 'integer'},
                                             'days': {
                                                 'type': 'array',
                                                 'items': {'type': 'string'}
@@ -455,18 +561,18 @@ class ConvertGoogleUserToBarberiaView(APIView):
             }
         }
        ),
-    methods=['POST'], tags=['Barberias'], 
+    methods=['POST'], tags=['Negocios'], 
     update=extend_schema(exclude=True),  # Oculta el método PUT (update)
     partial_update=extend_schema(
-        tags=['Barberias'],
-        summary="Editar mi barbería",
+        tags=['Negocios'],
+        summary="Editar mi negocio",
         request={
             'application/json': {
                 'type': 'object',
                 'properties': {
-                    'username': {'type': 'string'},
                     'password': {'type': 'string'},
                     'profile_imagen': {'type': 'string'},
+                    'banner_imagen': {'type': 'string'},
                     'ubicacion_coordenadas': { 
                         'type': 'object',
                         'properties': {
@@ -479,12 +585,14 @@ class ConvertGoogleUserToBarberiaView(APIView):
                         }
                     },
                     'biometric': {'type': 'string'},
-                    'barberia': {
+                    'negocio': {
                         'type': 'array',
                         'items': {
                             'type': 'object',
                             'properties': {
-                                'name_barber': {'type': 'string'},
+                                'name_business': {'type': 'string'},
+                                'city': {'type': 'string'},
+                                'descripcion': {'type': 'string'},
                                 'phone': {'type': 'string'},
                                 'address': {'type': 'string'},
                                 'horario': {
@@ -492,7 +600,6 @@ class ConvertGoogleUserToBarberiaView(APIView):
                                     'items': {
                                         'type': 'object',
                                         'properties': {
-                                            'turnos_max': {'type': 'integer'},
                                             'days': {
                                                 'type': 'array',
                                                 'items': {'type': 'string'}
@@ -510,13 +617,14 @@ class ConvertGoogleUserToBarberiaView(APIView):
             }
         }
     ),
-    destroy=extend_schema(tags=['Barberias'],
-        summary="Eliminar mi barberia",),
+    destroy=extend_schema(tags=['Negocios'],
+        summary="Eliminar mi negocio",),
 )
 
-class BarberiaViewSet(viewsets.ModelViewSet):
-    queryset = User.objects.exclude(barberia=None)
-    serializer_class = BarberiaSerializer
+class NegocioViewSet(viewsets.ModelViewSet):
+    queryset = User.objects.exclude(negocio=None)
+    serializer_class = negocioSerializer
+    pagination_class = ClientenegocioPagination  # 👈 AQUÍ
 
     # 1. Indica que el campo de búsqueda es 'id' (el PK de tu modelo User)
     lookup_field = 'id' 
@@ -525,98 +633,226 @@ class BarberiaViewSet(viewsets.ModelViewSet):
 
     parser_classes = [JSONParser, FormParser, MultiPartParser]
 
-    ##Aqui indico que barberias quiero ver...
+    ##Aqui indico que negocios quiero ver...
     def get_queryset(self):
         user = self.request.user
         
-        # Query base: solo barberías activas
+        # Query base: solo negocios activos(que confirmaron su email)
         queryset = User.objects.filter(
-            barberia__isnull=False, 
+            negocio__isnull=False, 
             is_active=True
-        ).exclude(barberia=[])
-        
-        # Ordenar por proximidad si el usuario tiene coordenadas
-        if self.action == 'list' and user.is_authenticated:
+        ).exclude(negocio=[])
+
+        # aplicamos filtros de búsqueda si hay parámetros
+        # el endpoint /business/ soportará ?city=... y ?name_business=... (también ?name)
+        # Legacy search parameters
+        city_param = self.request.query_params.get('city')
+        name_param = self.request.query_params.get('name_business') or self.request.query_params.get('name')
+        # single unified term
+        q_param = self.request.query_params.get('q')
+
+        if q_param:
+            # override the others by treating `q` as search for either field
+            city_param = q_param
+            name_param = q_param
+
+        # helper to strip accents + lowercase
+        def _norm(s: str) -> str:
+            if not s:
+                return ''
+            import unicodedata
+            s = unicodedata.normalize('NFD', s)
+            return ''.join(ch for ch in s if unicodedata.category(ch) != 'Mn').lower()
+
+        if city_param or name_param:
+            # Filtrar en memoria porque el campo `negocio` puede ser
+            # un diccionario o una lista de diccionarios.
+            filtered = []
+            norm_city = _norm(city_param) if city_param else ''
+            norm_name = _norm(name_param) if name_param else ''
+            for negocio in queryset:
+                nb_data = negocio.negocio
+                if isinstance(nb_data, list):
+                    if len(nb_data) == 0:
+                        continue
+                    first = nb_data[0]
+                elif isinstance(nb_data, dict):
+                    first = nb_data
+                else:
+                    continue
+
+                city_val = _norm(first.get('city', ''))
+                name_val = _norm(first.get('name_business', ''))
+
+                if norm_city and norm_city in city_val:
+                    filtered.append(negocio)
+                    continue
+                if norm_name and norm_name in name_val:
+                    filtered.append(negocio)
+                    continue
+            queryset = filtered
+
+        # Ordenar o filtrar según tipo de usuario / ubicación
+        action = getattr(self, 'action', None)
+        def sort_by_rating(qs):
+            """Return list sorted with rated businesses first (highest rating down),
+            followed by those lacking any rating.
+
+            The rating is computed from the Comment model (average of all ratings
+            left for that business).  None means no ratings have been left yet.
+            """
+            from api.models import Comment
+
+            def business_rating(user_obj):
+                # compute average over comments (may be slow if many users,
+                # but dataset is small).  Return None if no ratings exist.
+                comments = Comment.objects.filter(negocio_id=user_obj.id)
+                if not comments.exists():
+                    return None
+                total = sum(c.rating for c in comments)
+                return round(total / comments.count(), 1)
+
+            with_rating = []
+            without_rating = []
+            for negocio in qs:
+                rat = business_rating(negocio)
+                if rat is None:
+                    without_rating.append(negocio)
+                else:
+                    with_rating.append((negocio, rat))
+            # sort rated businesses by value descending
+            with_rating.sort(key=lambda x: x[1], reverse=True)
+            ordered = [n for n, _ in with_rating]
+            ordered.extend(without_rating)
+            return ordered
+
+        if action == 'list':
+            # usuario no autenticado -> por rating
+            if not user.is_authenticated:
+                return sort_by_rating(queryset)
+
+            # usuario autenticado
+            if user.negocio:  # es un negocio
+                # Mostrar primero el propio
+                own = list(queryset.filter(id=user.id))
+                others = list(queryset.exclude(id=user.id))
+                # obtener ciudad del propio negocio
+                own_city = ''
+                if user.negocio and isinstance(user.negocio, list) and len(user.negocio) > 0:
+                    own_city = user.negocio[0].get('city', '').lower()
+
+                def city_score(b):
+                    cityb = ''
+                    if b.negocio and isinstance(b.negocio, list) and len(b.negocio) > 0:
+                        cityb = b.negocio[0].get('city', '').lower()
+                    if cityb == own_city:
+                        return 0
+                    if own_city in cityb or cityb in own_city:
+                        return 1
+                    return 2
+                others.sort(key=city_score)
+                return own + others
+
+            # es cliente
             if hasattr(user, 'ubicacion_coordenadas') and user.ubicacion_coordenadas:
-                try:
-                    # Extraer coordenadas del usuario
+                # si tiene ciudad guardada (normalizada sin acentos)
+                import unicodedata
+                def _norm(s: str) -> str:
+                    if not s:
+                        return ''
+                    s = unicodedata.normalize('NFD', s)
+                    return ''.join(ch for ch in s if unicodedata.category(ch) != 'Mn').lower()
+
+                user_city = _norm(user.ciudad_coordenadas or '')
+                # si no tenemos ciudad pero sí coordenadas, intentar resolverla en el momento
+                if not user_city and user.ubicacion_coordenadas:
+                    from api.serializers import reverse_geocode_ciudad_coordenadas, _coords_to_lat_lon
+                    coords = user.ubicacion_coordenadas.get('coordinates', [])
+                    parsed = _coords_to_lat_lon(coords)
+                    if parsed:
+                        lat, lon = parsed
+                        # emular comportamiento del serializer
+                        ciudad = reverse_geocode_ciudad_coordenadas(round(float(lat), 5), round(float(lon), 5))
+                        if ciudad:
+                            user_city = _norm(ciudad)
+                            # persistir para no volver a pedirlo cada vez
+                            try:
+                                user.ciudad_coordenadas = ciudad
+                                user.save(update_fields=['ciudad_coordenadas'])
+                            except Exception:
+                                pass
+
+                # si tras todo lo anterior aún no resolvemos ninguna ciudad, tratamos como sin ubicación
+                if not user_city:
+                    return sort_by_rating(queryset)
+
+                matching = []
+                nonmatching = []
+                for negocio in queryset:
+                    citybiz = ''
+                    if negocio.negocio and isinstance(negocio.negocio, list) and len(negocio.negocio) > 0:
+                        citybiz = negocio.negocio[0].get('city', '')
+                    citybiz_norm = _norm(citybiz)
+                    if user_city and user_city == citybiz_norm:
+                        matching.append(negocio)
+                    else:
+                        nonmatching.append(negocio)
+
+                # ordenar matching por rating descendente, tie-breaker distancia si disponible
+                def rating_of(b):
+                    if b.negocio and isinstance(b.negocio, list) and len(b.negocio) > 0:
+                        return b.negocio[0].get('rating', 0)
+                    return 0
+                if matching:
                     user_coords = user.ubicacion_coordenadas.get('coordinates', [])
                     if len(user_coords) == 2:
-                        user_lng, user_lat = user_coords
-                        
-                        # 🔥 SEPARAR barberías CON y SIN coordenadas
-                        barberias_con_coordenadas = []
-                        barberias_sin_coordenadas = []
-                        
-                        for barberia in queryset:
-                            # Obtener el rating para todas las barberías
-                            rating = 0
-                            if barberia.barberia and isinstance(barberia.barberia, list) and len(barberia.barberia) > 0:
-                                rating = barberia.barberia[0].get('rating', 0)
-                            
-                            if (barberia.ubicacion_coordenadas and 
-                                barberia.ubicacion_coordenadas.get('coordinates')):
-                                
-                                barberia_coords = barberia.ubicacion_coordenadas['coordinates']
-                                if len(barberia_coords) == 2:
-                                    barberia_lng, barberia_lat = barberia_coords
-                                    
-                                    # Calcular distancia
-                                    distancia = self.calcular_distancia(
-                                        user_lat, user_lng, barberia_lat, barberia_lng
-                                    )
-                                    
-                                    barberias_con_coordenadas.append({
-                                        'barberia': barberia,
-                                        'distancia': distancia,
-                                        'rating': rating
-                                    })
-                                    continue
-                            
-                            # Si no tiene coordenadas, agregar a la lista sin coordenadas
-                            barberias_sin_coordenadas.append({
-                                'barberia': barberia,
-                                'distancia': None,
-                                'rating': rating
-                            })
-                        
-                        # 🔥 ORDENAR barberías CON coordenadas por distancia (más cercanas primero)
-                        barberias_con_coordenadas.sort(key=lambda x: x['distancia'])
-                        
-                        # 🔥 ORDENAR barberías SIN coordenadas por rating (mejores primero)
-                        barberias_sin_coordenadas.sort(key=lambda x: x['rating'], reverse=True)
-                        
-                        # 🔥 COMBINAR: primero las con coordenadas, luego las sin coordenadas
-                        resultado_final = barberias_con_coordenadas + barberias_sin_coordenadas
-                        
-                        return [item['barberia'] for item in resultado_final]
-                        
-                except (ValueError, TypeError, AttributeError) as e:
-                    print(f"Error calculando distancias: {e}")
-                    # Si hay error, continuar con ordenamiento por rating para todas
-        
-            # 🔥 FALLBACK: Ordenar todas las barberías por rating si no hay coordenadas o hay error
-            barberias_con_rating = []
-            
-            for barberia in queryset:
-                rating = 0
-                if barberia.barberia and isinstance(barberia.barberia, list) and len(barberia.barberia) > 0:
-                    rating = barberia.barberia[0].get('rating', 0)
-                    
-                barberias_con_rating.append({
-                    'barberia': barberia,
-                    'rating': rating
-                })
-            
-            barberias_con_rating.sort(key=lambda x: x['rating'], reverse=True)
-            return [item['barberia'] for item in barberias_con_rating]
-        
-        # Si no está autenticado o no es list, devolver queryset normal
+                        u_lng, u_lat = user_coords
+                        def rating_dist_key(b):
+                            # sort by (-rating, distance)
+                            r = -rating_of(b)
+                            if b.ubicacion_coordenadas and b.ubicacion_coordenadas.get('coordinates'):
+                                coords = b.ubicacion_coordenadas['coordinates']
+                                if len(coords) == 2:
+                                    d = self.calcular_distancia(u_lat, u_lng, coords[1], coords[0])
+                                else:
+                                    d = float('inf')
+                            else:
+                                d = float('inf')
+                            return (r, d)
+                        matching.sort(key=rating_dist_key)
+                    else:
+                        matching.sort(key=lambda b: -rating_of(b))
+
+                # ordenamos negocios no coincidentes por distancia si tenemos coords, sino por rating
+                user_coords = user.ubicacion_coordenadas.get('coordinates', [])
+                if len(user_coords) == 2:
+                    u_lng, u_lat = user_coords
+                    def dist_rating_key(b):
+                        # primary distance, secondary -rating
+                        if b.ubicacion_coordenadas and b.ubicacion_coordenadas.get('coordinates'):
+                            coords = b.ubicacion_coordenadas['coordinates']
+                            if len(coords) == 2:
+                                d = self.calcular_distancia(u_lat, u_lng, coords[1], coords[0])
+                            else:
+                                d = float('inf')
+                        else:
+                            d = float('inf')
+                        r = -rating_of(b)
+                        return (d, r)
+                    nonmatching.sort(key=dist_rating_key)
+                else:
+                    nonmatching = sort_by_rating(nonmatching)
+                return matching + nonmatching
+            else:
+                # cliente sin ubicación -> ordenar por rating
+                return sort_by_rating(queryset)
+
+        # fuera de list o errores devolver original
         return queryset
                 
         
     
-    #por si quiero que solamente las mismas barberias vean su info
+    #por si quiero que solamente las mismas negocios vean su info
     #def get_permissions(self):
     #    if self.action == 'create': # Esta linea significa que el endpoint register lo pueda usar cualquiera
     #        return [AllowAny()]  # Permitir registro sin autenticación
@@ -625,24 +861,25 @@ class BarberiaViewSet(viewsets.ModelViewSet):
     #       
     #        # Y que el resto de metodos usen IsAuthenticated que significa JWT y el IsSelf que significa
     #        # que el mismo usuario pueda acceder a su propio recurso, ejemplo el usuario 1 solo acceda al endpoint 1 
-    #        return [IsAuthenticated(), MiBarberia()]  # 👈 Requiere autenticación y que sea el mismo usuario 
+    #        return [IsAuthenticated(), Minegocio()]  # 👈 Requiere autenticación y que sea el mismo usuario 
     #    #El IsAuthenticated es creado automaticamente por Django, MiUsuario es creado manualmente
     #    return [IsAuthenticated()]
 
 
     def get_permissions(self):
-        if self.action == 'create':
-            return [AllowAny()]  # Permitir registro sin autenticación
-        elif self.action == 'retrieve':  
-            # Permitir a cualquier usuario autenticado ver detalles de cualquier barbería
-            return [IsAuthenticated()]
-        elif self.action in ['partial_update', 'destroy']:
+        action = getattr(self, 'action', None)
+
+        # permitimos búsquedas públicas junto con list y retrieve
+        if action in ['create', 'list', 'retrieve', 'search']:
+            return [AllowAny()]
+        
+        elif action in ['partial_update', 'destroy']:
             # Solo el dueño puede actualizar o eliminar
-            return [IsAuthenticated(), MiBarberia()]
+            return [IsAuthenticated(), Minegocio()]
         return [IsAuthenticated()]
     
 
-    @extend_schema(tags=['Barberia'])
+    @extend_schema(tags=['Negocio'])
     def create(self, request, *args, **kwargs):
         # Verificar si el usuario ya existe (autenticación social)
         email = request.data.get('email')
@@ -660,7 +897,7 @@ class BarberiaViewSet(viewsets.ModelViewSet):
                     user = serializer.save()
                     
                     return Response(
-                        BarberiaSerializer(user).data, 
+                        negocioSerializer(user).data, 
                         status=status.HTTP_200_OK
                     )
             except User.DoesNotExist:
@@ -672,14 +909,14 @@ class BarberiaViewSet(viewsets.ModelViewSet):
         else:
             data = request.data
     
-        # 🔑 Normaliza internamente solo dentro de barberia
-        barberia = data.get("barberia")
-        if barberia:
-            if "services" in barberia and isinstance(barberia["services"], dict):
-                barberia["services"] = [v for k, v in sorted(barberia["services"].items(), key=lambda x: int(x[0]))]
-            if "horario" in barberia and isinstance(barberia["horario"], dict):
-                barberia["horario"] = [v for k, v in sorted(barberia["horario"].items(), key=lambda x: int(x[0]))]
-                for h in barberia["horario"]:
+        # 🔑 Normaliza internamente solo dentro de negocio
+        negocio = data.get("negocio")
+        if negocio:
+            if "services" in negocio and isinstance(negocio["services"], dict):
+                negocio["services"] = [v for k, v in sorted(negocio["services"].items(), key=lambda x: int(x[0]))]
+            if "horario" in negocio and isinstance(negocio["horario"], dict):
+                negocio["horario"] = [v for k, v in sorted(negocio["horario"].items(), key=lambda x: int(x[0]))]
+                for h in negocio["horario"]:
                     if "days" in h and isinstance(h["days"], dict):
                         h["days"] = [v for k, v in sorted(h["days"].items(), key=lambda x: int(x[0]))]
     
@@ -694,7 +931,7 @@ class BarberiaViewSet(viewsets.ModelViewSet):
             context = {"user": user}
             djoser_settings.EMAIL.activation(self.request, context).send([user.email])
     
-        return Response(BarberiaSerializer(user).data, status=status.HTTP_201_CREATED)
+        return Response(negocioSerializer(user).data, status=status.HTTP_201_CREATED)
 
         
     def update(self, request, *args, **kwargs):
@@ -706,115 +943,168 @@ class BarberiaViewSet(viewsets.ModelViewSet):
         return super().update(request, *args, **kwargs)
     
     def partial_update(self, request, *args, **kwargs):
+        # 1. Transformar la data de Postman (form-data) a Diccionario anidado
+        if request.content_type.startswith("multipart/form-data") or request.content_type.startswith("application/x-www-form-urlencoded"):
+            raw_data = querydict_to_nested(request.data)
+            data = dict_to_list(raw_data)
+        else:
+            data = request.data
+
+        # 2. Normalizar el campo negocio si viene como dict (convertir a lista)
+        negocio = data.get("negocio")
+        if negocio and isinstance(negocio, dict):
+            # Esto convierte {'0': {...}} en [{...}]
+            data["negocio"] = [v for k, v in sorted(negocio.items(), key=lambda x: int(x[0]))]
+            
+            # Profundizar en horario y days
+            for item in data["negocio"]:
+                if "horario" in item and isinstance(item["horario"], dict):
+                    item["horario"] = [v for k, v in sorted(item["horario"].items(), key=lambda x: int(x[0]))]
+                    for h in item["horario"]:
+                        if "days" in h and isinstance(h["days"], dict):
+                            h["days"] = [v for k, v in sorted(h["days"].items(), key=lambda x: int(x[0]))]
+
         kwargs['partial'] = True
-        return self.update(request, *args, **kwargs) 
+        serializer = self.get_serializer(self.get_object(), data=data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        self.perform_update(serializer)
+        
+        return Response(negocioSerializer(self.get_object()).data)
     
     @extend_schema(
         parameters=[
+            
             OpenApiParameter(
-                name='lat', 
-                type=OpenApiTypes.FLOAT, 
+                name='city',
+                type=OpenApiTypes.STR,
                 location=OpenApiParameter.QUERY,
-                description='Latitud del usuario'
+                description='(Opcional) ciudad literal o parcial'
             ),
             OpenApiParameter(
-                name='lng', 
-                type=OpenApiTypes.FLOAT, 
+                name='name_business',
+                type=OpenApiTypes.STR,
                 location=OpenApiParameter.QUERY,
-                description='Longitud del usuario'
+                description='(Opcional) nombre del negocio para filtrar'
             ),
-            OpenApiParameter(
-                name='radius', 
-                type=OpenApiTypes.FLOAT, 
-                location=OpenApiParameter.QUERY,
-                description='Radio de búsqueda en kilómetros (default: 10)'
-            ),
-            OpenApiParameter(
-                name='city', 
-                type=OpenApiTypes.STR, 
-                location=OpenApiParameter.QUERY,
-                description='Filtrar por ciudad'
-            )
         ],
-        tags=['Barberias']
+        tags=['Negocios']
     )
-    @action(detail=False, methods=['get'], url_path='cercanas')
-    def barberias_cercanas(self, request):
-        """
-        Obtener barberías cercanas a una ubicación
-        """
-        # Obtener parámetros de la query
-        lat = request.query_params.get('lat')
-        lng = request.query_params.get('lng')
-        radius = float(request.query_params.get('radius', 10))  # Radio default: 10km
-        city = request.query_params.get('city')
-        
-        # Validar parámetros
-        if not lat or not lng:
-            return Response(
-                {"error": "Se requieren parámetros lat y lng"},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
-        try:
-            user_lat = float(lat)
-            user_lng = float(lng)
-        except ValueError:
-            return Response(
-                {"error": "Latitud y longitud deben ser números válidos"},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
-        # Query base: solo barberías activas
-        queryset = User.objects.filter(
-            barberia__isnull=False, 
-            is_active=True
-        ).exclude(barberia=[])
-        
-        # Filtrar por ciudad si se especifica
-        if city:
-            queryset = queryset.filter(city__iexact=city)
-        
-        # Si tenemos coordenadas, calcular distancias
-        barberias_con_distancia = []
-        
-        for barberia in queryset:
-            if barberia.location and barberia.location.get('coordinates'):
-                barberia_lat, barberia_lng = barberia.location['coordinates']
-                
-                # Calcular distancia (fórmula Haversine)
-                distancia_km = self.calcular_distancia(
-                    user_lat, user_lng, barberia_lat, barberia_lng
-                )
-                
-                # Solo incluir barberías dentro del radio
-                if distancia_km <= radius:
-                    barberias_con_distancia.append({
-                        'barberia': barberia,
-                        'distancia_km': round(distancia_km, 2)
-                    })
-        
-        # Ordenar por distancia
-        barberias_con_distancia.sort(key=lambda x: x['distancia_km'])
-        
-        # Paginación
-        page = self.paginate_queryset(barberias_con_distancia)
-        if page is not None:
-            serializer = BarberiaCercanaSerializer(
-                [item['barberia'] for item in page], 
-                many=True,
-                context={'distancias': {item['barberia'].id: item['distancia_km'] for item in page}}
-            )
-            return self.get_paginated_response(serializer.data)
-        
-        serializer = BarberiaCercanaSerializer(
-            [item['barberia'] for item in barberias_con_distancia],
-            many=True,
-            context={'distancias': {item['barberia'].id: item['distancia_km'] for item in barberias_con_distancia}}
-        )
-        
-        return Response(serializer.data)
+    ##@action(detail=False, methods=['get'], url_path='cercanas')
+    ##def negocios_cercanas(self, request):
+    ##    """
+    ##    Obtener business cercanas a una ubicación
+    ##    """
+    ##    # Obtener parámetros de la query
+    ##    lat = request.query_params.get('lat')
+    ##    lng = request.query_params.get('lng')
+    ##    radius = float(request.query_params.get('radius', 10))  # Radio default: 10km
+    ##    ciudad_coordenadas = request.query_params.get('ciudad_coordenadas')
+    ##    
+    ##    # Validar parámetros
+    ##    if not lat or not lng:
+    ##        return Response(
+    ##            {"error": "Se requieren parámetros lat y lng"},
+    ##            status=status.HTTP_400_BAD_REQUEST
+    ##        )
+    ##    
+    ##    try:
+    ##        user_lat = float(lat)
+    ##        user_lng = float(lng)
+    ##    except ValueError:
+    ##        return Response(
+    ##            {"error": "Latitud y longitud deben ser números válidos"},
+    ##            status=status.HTTP_400_BAD_REQUEST
+    ##        )
+    ##    
+    ##    # Query base: solo business activas
+    ##    queryset = User.objects.filter(
+    ##        negocio__isnull=False, 
+    ##        is_active=True
+    ##    ).exclude(negocio=[])
+    ##    
+    ##    # Filtrar por ciudad si se especifica
+    ##    if ciudad_coordenadas:
+    ##        queryset = queryset.filter(ciudad_coordenadas__iexact=ciudad_coordenadas)
+    ##    
+    ##    # Si tenemos coordenadas, calcular distancias
+    ##    negocios_con_distancia = []
+    ##    
+    ##    for negocio in queryset:
+    ##        if negocio.location and negocio.location.get('coordinates'):
+    ##            negocio_lat, negocio_lng = negocio.location['coordinates']
+    ##            
+    ##            # Calcular distancia (fórmula Haversine)
+    ##            distancia_km = self.calcular_distancia(
+    ##                user_lat, user_lng, negocio_lat, negocio_lng
+    ##            )
+    ##            
+    ##            # Solo incluir business dentro del radio
+    ##            if distancia_km <= radius:
+    ##                negocios_con_distancia.append({
+    ##                    'negocio': negocio,
+    ##                    'distancia_km': round(distancia_km, 2)
+    ##                })
+    ##    
+    ##    # Ordenar por distancia
+    ##    negocios_con_distancia.sort(key=lambda x: x['distancia_km'])
+    ##    
+    ##    # Paginación
+    ##    page = self.paginate_queryset(negocios_con_distancia)
+    ##    if page is not None:
+    ##        serializer = negocioCercanaSerializer(
+    ##            [item['negocio'] for item in page], 
+    ##            many=True,
+    ##            context={'distancias': {item['negocio'].id: item['distancia_km'] for item in page}}
+    ##        )
+    ##        return self.get_paginated_response(serializer.data)
+    ##    
+    ##    serializer = negocioCercanaSerializer(
+    ##        [item['negocio'] for item in negocios_con_distancia],
+    ##        many=True,
+    ##        context={'distancias': {item['negocio'].id: item['distancia_km'] for item in negocios_con_distancia}}
+    ##    )
+    ##    
+    ##    return Response(serializer.data)
     
+    @extend_schema(
+        tags=['Negocios'],
+        summary="Buscar negocios por ciudad o nombre",
+        parameters=[
+            OpenApiParameter(
+                name='q',
+                type=OpenApiTypes.STR,
+                location=OpenApiParameter.QUERY,
+                description='Término de búsqueda único que puede coincidir con city o name_business'
+            ),
+            OpenApiParameter(
+                name='city',
+                type=OpenApiTypes.STR,
+                location=OpenApiParameter.QUERY,
+                description='(Opcional) ciudad exacta/parcial'
+            ),
+            OpenApiParameter(
+                name='name_business',
+                type=OpenApiTypes.STR,
+                location=OpenApiParameter.QUERY,
+                description='(Opcional) nombre del negocio'
+            ),
+        ]
+    )
+    @action(detail=False, methods=['get'], url_path='search', permission_classes=[AllowAny])
+    def search(self, request):
+        """Retorna una lista paginada de negocios filtrados por `city` o `name_business`.
+        
+        Parámetros de consulta aceptados:
+        - `q`: término único usado para buscar en ambos campos
+        """
+        queryset = self.get_queryset()
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
+
     def calcular_distancia(self, lat1, lng1, lat2, lng2):
         """Calcula distancia entre dos puntos usando fórmula Haversine"""
         
@@ -839,7 +1129,7 @@ class BarberiaViewSet(viewsets.ModelViewSet):
 @extend_schema_view(
     list=extend_schema(
         tags=['Comentarios'],
-        summary="Obtener todos los comentarios que he realizado",
+        summary="Obtener todos los comentarios",
         ),
     retrieve=extend_schema(
         #Retrieve son las consultas Get con ID
@@ -848,8 +1138,18 @@ class BarberiaViewSet(viewsets.ModelViewSet):
         ),
     create=extend_schema(
         tags=['Comentarios'],
-        summary="Crear comentario para una barberia",
-        request=CommentSerializer, 
+        summary="Crear comentario para una negocio",
+        request={
+            'application/json': {
+                'type': 'object',
+                'properties': {
+                    'negocio_id': {'type': 'string'},
+                    'rating': {'type': 'number'},
+                    'description': {'type': 'string'},
+                },
+                'required': []
+            }
+        }
     ), 
     methods=['POST'], tags=['Comentarios'], 
     update=extend_schema(exclude=True),  # Oculta el método PUT (update)
@@ -860,6 +1160,7 @@ class BarberiaViewSet(viewsets.ModelViewSet):
             'application/json': {
                 'type': 'object',
                 'properties': {
+                    'negocio_id': {'type': 'string'},
                     'rating': {'type': 'number'},
                     'description': {'type': 'string'},
                 },
@@ -875,265 +1176,65 @@ class BarberiaViewSet(viewsets.ModelViewSet):
 class ComentarioViewSet(viewsets.ModelViewSet):
     queryset = Comment.objects.all()
     serializer_class = CommentSerializer
-    permission_classes = [IsAuthenticated]
+    pagination_class = ComentarioPagination  
 
     lookup_field = 'id'
     lookup_value_regex = '[0-9a-fA-F]{24}' 
 
+    def get_permissions(self):
+        action = getattr(self, 'action', None)
 
-    http_method_names = ['get', 'post', 'patch', 'delete', 'head', 'options'] # Excluye 'put'
-
-    def get_queryset(self):
-        queryset = super().get_queryset()
+        # listado público y detalle de comentario siempre permitidos
+        if action in ['list', 'retrieve', 'negocio_comments']:
+            return [AllowAny()]
         
-        # lista general de comentarios del usuario
-        if not self.request.user.is_staff and self.action == 'list':
-            queryset = queryset.filter(cliente=self.request.user)
-        return queryset
+        # mis comentarios requiere autenticación
+        if action == 'my_comments':
+            return [IsAuthenticated()]
+        
+        elif action in ['create', 'partial_update', 'destroy']:
+            # crear, editar y borrar sólo si está autenticado (own objects check in serializer or view)
+            return [IsAuthenticated()]
+        return [IsAuthenticated()]
 
-
-    # --- NUEVA ACCIÓN PERSONALIZADA PARA COMENTARIOS DE BARBERÍA ---
     @extend_schema(
-        summary="Obtener todos los comentarios de una barbería específica",
-        #description="Lista todos los comentarios para una barbería dada por su ID.",
-        parameters=[
-            {
-                "name": "barber_id",
-                "type": "string",
-                "required": True,
-                #"description": "ID de la barbería",
-                "in": "path"
-            }
-        ],
-        tags=['Comentarios'] # Asegúrate de que tenga el mismo tag para agrupar
+        tags=['Comentarios'],
+        summary="Obtener mis comentarios",
+        description="Retorna todos los comentarios que el usuario autenticado ha realizado",
     )
-    @action(detail=False, methods=['get'], url_path='barberia/(?P<barber_id>[0-9a-fA-F]{24})')
-    def by_barberia(self, request, barber_id=None):
-        try:
-            barberia_instance = User.objects.get(id=barber_id, barberia__isnull=False)
-            comments = Comment.objects.filter(barberia=barberia_instance)
-            serializer = self.get_serializer(comments, many=True)
-            return Response(serializer.data)
-        except (User.DoesNotExist, ValueError):
-            raise Http404("Barbería no encontrada o ID inválido.")
+    @action(detail=False, methods=['get'], permission_classes=[IsAuthenticated], url_path='mis-comentarios')
+    def my_comments(self, request):
+        """Devuelve todos los comentarios realizados por el usuario autenticado."""
+        qs = self.get_queryset().filter(cliente=request.user)
+        page = self.paginate_queryset(qs)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+        serializer = self.get_serializer(qs, many=True)
+        return Response(serializer.data)
 
-    def get_object(self):
-        obj = super().get_object()
-        self.check_object_permissions(self.request, obj)
-        return obj
-
-
-    def get_permissions(self):
-        if self.action == 'create':
-            # Permitir que cualquier usuario autenticado cree un comentario 
-            return [IsAuthenticated()] 
-        elif self.action == 'list':
-            # Permitir que cualquier usuario autenticado lea comentario 
-            return [IsAuthenticated()]
-        elif self.action in ['retrieve', 'partial_update', 'destroy']:  
-            # Permitir que cualquier usuario autenticado pueda modificar su propio comentario 
-            return [IsAuthenticated(), MiUsuario()]  
-        return [IsAuthenticated()]
-
-    def create(self, request, *args, **kwargs):
-        serializer = self.get_serializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        self.perform_create(serializer) # This calls serializer.save()
-        headers = self.get_success_headers(serializer.data)
-        return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
-    
-###··············####################################################3Turnos    
-
-@extend_schema_view(
-    list=extend_schema(
-        tags=['Turnos'],
-        summary="Obtener la lista de todos mis turnos",
-    ),
-    retrieve=extend_schema(
-        tags=['Turnos'],
-        summary="Obtener los detalles de un turno específico",
-    ),
-    create=extend_schema(
-        tags=['Turnos'],
-        summary="Reservar un nuevo turno",
-        request=TurnoSerializer,
-    ),
-    update=extend_schema(exclude=True),  # Oculta el método PUT (update)
-    partial_update=extend_schema(
-        tags=['Turnos'],
-        summary="Actualizar un turno existente",
-    ),
-    destroy=extend_schema(
-        tags=['Turnos'],
-        summary="Eliminar un turno",
-    ),
-)
-
-class TurnoViewSet(viewsets.ModelViewSet):
-    queryset = Turnos.objects.all()
-    serializer_class = TurnoSerializer 
-    permission_classes = [IsAuthenticated]
-
-    lookup_field = 'id'
-    lookup_value_regex = '[0-9a-fA-F]{24}' 
-
-
-    http_method_names = ['get', 'post', 'patch', 'delete', 'head', 'options'] # Excluye 'put'
-
-    def get_serializer_class(self):
-        # 💡 Modifica este método para usar el serializador de actualización
-        if self.action in ['partial_update', 'update']:
-            return TurnoUpdateSerializer
-        return TurnoSerializer
-
-    def get_queryset(self):
-        # 💡 MODIFICA ESTA FUNCIÓN COMPLETA
-        user = self.request.user
-
-        # Si el usuario es un staff (admin), le mostramos todo
-        if user.is_staff:
-            return Turnos.objects.all()
-        # Si el usuario es una barbería, le mostramos todos los turnos que tiene asignados
-        elif user.barberia is not None:
-            return Turnos.objects.filter(barberia=user)
-        # Si el usuario es un cliente, le mostramos todos los turnos que ha solicitado
-        else:
-            return Turnos.objects.filter(cliente=user)
-
-    def get_permissions(self):
-        if self.action == 'create':
-            # Permitir que cualquier usuario autenticado cree un turno
-            return [IsAuthenticated()] 
-        elif self.action == 'list':
-            # Permitir que cualquier usuario autenticado lea turnos
-            return [IsAuthenticated()]
-        elif self.action in ['retrieve', 'partial_update', 'destroy']:  
-            # Permitir que cualquier usuario autenticado pueda modificar su propio turno
-            return [IsAuthenticated(), EsClienteOBarberoDelTurno()]  
-        return [IsAuthenticated()]
-
-    def create(self, request, *args, **kwargs):
-        serializer = self.get_serializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        self.perform_create(serializer) # This calls serializer.save()
-        headers = self.get_success_headers(serializer.data)
-        return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
-
-        
-    
     @extend_schema(
-        tags=['Turnos'],
-        summary="Endpoint para conocer cuales son los turnos disponibles",
-    ) 
-    @action(detail=False, methods=['get'], url_path='disponibles/(?P<barber_id>[0-9a-fA-F]{24})')
-    def turnos_disponibles(self, request, barber_id=None):
-        """
-        Devuelve todos los turnos libres de todos los días que trabaja la barbería.
-        """
-        try:
-            barberia_instance = User.objects.get(id=barber_id, barberia__isnull=False)
-        except User.DoesNotExist:
-            raise Http404("Barbería no encontrada")
-
-        barberia_data = barberia_instance.barberia[0]
-        dias_laborables = barberia_data['horario'][0]['days']
-        max_turnos = barberia_data['horario'][0]['turnos_max']
-
-        # --- Reordenar los días según el día de hoy ---
-        hoy = datetime.datetime.now().strftime("%A").lower()  # ej: "thursday"
-        
-        # Mapeo inglés -> español
-        map_dias = {
-            "monday": "lunes",
-            "tuesday": "martes",
-            "wednesday": "miercoles",
-            "thursday": "jueves",
-            "friday": "viernes",
-            "saturday": "sabado",
-            "sunday": "domingo"
-        }
-        dia_actual = map_dias[hoy]
-    
-        if dia_actual in dias_laborables:
-            idx = dias_laborables.index(dia_actual)
-            dias_laborables = dias_laborables[idx:] + dias_laborables[:idx]
-    
-        resultados = []
-
-        for dia in dias_laborables:
-            try:
-                fecha_turno = Turnos.calcular_fecha_turno(dia.lower())
-            except KeyError:
-                continue  # Saltar días inválidos
-
-            # Obtener los turnos ocupados para esa fecha
-            turnos_ocupados = Turnos.objects.filter(
-                barberia=barberia_instance,
-                fecha_turno=fecha_turno
-            ).values_list('turno', flat=True)
-
-            # Todos los turnos posibles
-            todos_los_turnos = list(range(1, max_turnos + 1))
-            turnos_libres = [t for t in todos_los_turnos if t not in turnos_ocupados]
-
-            # Calcular la hora de cada turno
-            disponibilidad = []
-            for t in turnos_libres:
-                inicio, fin = calcular_hora_turno(
-                    barberia_data['openingTime'],
-                    barberia_data['closingTime'],
-                    max_turnos,
-                    t
-                )
-                disponibilidad.append({
-                    "turno": t,
-                    "hora": f"{inicio} - {fin}"
-                })
-
-            resultados.append({
-                "dia": dia,
-                "fecha_turno": fecha_turno.strftime("%d/%m/%Y"),
-                "disponibles": disponibilidad
-            })
-
-        return Response({
-            "barberia": barberia_data['name_barber'],
-            "turnos_por_dia": resultados
-        })
-
-
-@extend_schema(
-    tags=['Turnos'],
-    summary="Endpoint para eliminar turnos antiguos automaticamente",
-    description="Endpoint para eliminar turnos antiguos. Solo accesible con un token secreto."
-)     
-@api_view(['DELETE'])
-@permission_classes([AllowAny])
-def delete_old_turnos_view(request, token):
-    """
-    Endpoint para eliminar turnos antiguos.
-    Solo accesible con un token secreto.
-    """
-    if token != VERCEL_API_KEY_SECRET:
-        return Response({'detail': 'Token de autenticación inválido.'}, status=status.HTTP_401_UNAUTHORIZED)
-
-    try:
-        ayer = date.today() - timedelta(days=1)
-        turnos_a_borrar = Turnos.objects.filter(fecha_turno__lte=ayer)
-        num_turnos_borrados = turnos_a_borrar.count()
-        turnos_a_borrar.delete()
-
-        return Response({
-            'detail': f'Se eliminaron {num_turnos_borrados} turnos antiguos.',
-            'count': num_turnos_borrados
-        }, status=status.HTTP_200_OK)
-    
-    except Exception as e:
-        return Response({'detail': f'Ocurrió un error: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-    
-    
-
-
+        tags=['Comentarios'],
+        summary="Comentarios por negocio",
+        description="Devuelve todos los comentarios asociados a un negocio específico. Se pasa el id del negocio como query param `negocio_id` o `business_id`.",
+        parameters=[
+            OpenApiParameter(name='negocio_id', type=OpenApiTypes.STR, location=OpenApiParameter.QUERY, description='ID del negocio'),
+        ],
+    )
+    @action(detail=False, methods=['get'], permission_classes=[AllowAny], url_path='negocio')
+    def negocio_comments(self, request):
+        """Lista comentarios para un negocio específico mediante query param `negocio_id` o `business_id`."""
+        negocio_id = request.query_params.get('negocio_id') or request.query_params.get('business_id')
+        if not negocio_id:
+            return Response({"detail": "Se requiere parámetro negocio_id"}, status=status.HTTP_400_BAD_REQUEST)
+        qs = self.get_queryset().filter(negocio__id=negocio_id)
+        page = self.paginate_queryset(qs)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+        serializer = self.get_serializer(qs, many=True)
+        return Response(serializer.data)
+  
 ##########################Servicios
 
 @extend_schema_view(
@@ -1148,7 +1249,7 @@ def delete_old_turnos_view(request, token):
         ),
     create=extend_schema(
         tags=['Servicios'],
-        summary="Publicar servicios de mi barberia",
+        summary="Publicar servicios de mi negocio",
         request=ServicioSerializer, 
     ), 
     methods=['POST'], tags=['Servicios'], 
@@ -1165,6 +1266,7 @@ def delete_old_turnos_view(request, token):
 class ServicioViewSet(viewsets.ModelViewSet):
     queryset = Servicio.objects.all()
     serializer_class = ServicioSerializer
+    pagination_class = ServicioPagination
     permission_classes = [IsAuthenticated]
 
     lookup_field = 'id'
@@ -1174,35 +1276,44 @@ class ServicioViewSet(viewsets.ModelViewSet):
     http_method_names = ['get', 'post', 'patch', 'delete', 'head', 'options'] # Excluye 'put'
 
     @extend_schema(
-        summary="Obtener todos los servicios de una barbería específica",
-        #description="Lista todos los comentarios para una barbería dada por su ID.",
+        summary="Obtener todos los servicios de un negocio específico",
+        #description="Lista todos los comentarios para un negocio dada por su ID.",
         parameters=[
             {
-                "name": "barber_id",
+                "name": "business_id",
                 "type": "string",
                 "required": True,
-                #"description": "ID de la barbería",
+                #"description": "ID de el negocio",
                 "in": "path"
             }
         ],
         tags=['Servicios'] # Asegúrate de que tenga el mismo tag para agrupar
     )
-    # --- NUEVA ACCIÓN PERSONALIZADA PARA SERVICIOS DE BARBERÍA ---
-    @action(detail=False, methods=['get'], url_path='barberia/(?P<barber_id>[0-9a-fA-F]{24})')
-    def by_barberia(self, request, barber_id=None):
+    # --- NUEVA ACCIÓN PERSONALIZADA PARA SERVICIOS DE LOS negocioS ---
+    @action(detail=False, methods=['get'], url_path='negocio/(?P<business_id>[0-9a-fA-F]{24})')
+    def by_negocio(self, request, business_id=None):
         """
-        Obtener todos los servicios de una barbería específica
+        Obtener todos los servicios de un negocio específica
         """
         try:
-            barberia_instance = User.objects.get(id=barber_id, barberia__isnull=False)
-            servicios = Servicio.objects.filter(barberia=barberia_instance)
+            negocio_instance = User.objects.get(id=business_id, negocio__isnull=False)
+            servicios = Servicio.objects.filter(negocio=negocio_instance)
+
+            # 🔥 APLICAR PAGINACIÓN aquí
+            page = self.paginate_queryset(servicios)
+            if page is not None:
+                serializer = self.get_serializer(page, many=True)
+                return self.get_paginated_response(serializer.data)
+            
+            # Si no hay paginación, devolver todos (fallback)
+
             serializer = self.get_serializer(servicios, many=True)
             return Response(serializer.data)
         except (User.DoesNotExist, ValueError):
-            raise Http404("Barbería no encontrada o ID inválido.")
+            raise Http404("negocio no encontrado o ID inválido.")
 
     def perform_create(self, serializer):
-        serializer.save(barberia=self.request.user)  # barbería autenticada
+        serializer.save(negocio=self.request.user)  # negocio autenticado
 
 
     def get_object(self):
@@ -1212,15 +1323,14 @@ class ServicioViewSet(viewsets.ModelViewSet):
 
 
     def get_permissions(self):
-        if self.action == 'create':
-            # Permitir que cualquier usuario autenticado cree un comentario 
-            return [IsAuthenticated()] 
-        elif self.action == 'list':
-            # Permitir que cualquier usuario autenticado lea comentario 
-            return [IsAuthenticated()]
-        elif self.action in ['partial_update', 'destroy']:  
+        action = getattr(self, 'action', None)
+
+        if action in ['list', 'retrieve', 'by_negocio']:
+                return [AllowAny()]
+            
+        elif action in ['create', 'partial_update', 'destroy']:
             # Permitir que cualquier usuario autenticado pueda modificar su propio comentario 
-            return [IsAuthenticated(), MiServicio()]  
+            return [IsAuthenticated(), MiServicio()]
         return [IsAuthenticated()]
 
     def create(self, request, *args, **kwargs):
@@ -1229,7 +1339,254 @@ class ServicioViewSet(viewsets.ModelViewSet):
         self.perform_create(serializer) # This calls serializer.save()
         headers = self.get_success_headers(serializer.data)
         return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
+
+
+
+class ChatWebsocketInfoView(APIView):
+    permission_classes = [AllowAny]
+
+    @extend_schema(
+        description='Información para conectarse al websocket de chat. Use JWT como query param `token`.',
+        responses={
+            200: OpenApiTypes.OBJECT,
+        },
+    )
+    def get(self, request, *args, **kwargs):
+        scheme = 'wss' if request.is_secure() else 'ws'
+        host = request.get_host()
+        websocket_template = f"{scheme}://{host}/ws/chat/<receptor_id>/?token=<JWT>"
+
+        return Response({
+            'websocket_url': websocket_template,
+            'description': 'Conéctese a esta URL usando el ID del destinatario. Envíe el JWT como query param `token=<JWT>`.',
+            'message_format': {
+                'message': 'Texto del mensaje'
+            },
+            'broadcast_event': {
+                'message': 'Texto del mensaje',
+                'emisor': '<user_id>',
+                'receptor': '<receptor_id>',
+                'hora_mensaje': '<ISO8601>'
+            }
+        })
+
+@extend_schema_view(
+    list=extend_schema(
+        tags=['Chat'],
+        summary="Obtener todos los mensajes relacionados con el usuario autenticado",
+        ),
+    retrieve=extend_schema(
+        #Retrieve son las consultas Get con ID
+        tags=['Chat'], 
+        summary="Obtener un mensaje en especifico",
+        ),
+    create=extend_schema(
+        tags=['Chat'],
+        summary="Enviar un mensaje",
+        request=ChatMessageSerializer, 
+    ), 
+    methods=['POST'], tags=['Chat'], 
+    update=extend_schema(exclude=True),  # Oculta el método PUT (update)
+    partial_update=extend_schema(
+        tags=['Chat'],
+        summary="Editar mi mensaje",
+    ),   
+    destroy=extend_schema(tags=['Chat'], 
+        summary="Eliminar mi mensaje",
+        ),
+)
+
+class ChatMessageViewSet(viewsets.ModelViewSet):
+    serializer_class = ChatMessageSerializer
+    permission_classes = [IsAuthenticated, ChatMessageParticipantPermission]
+
+    def get_queryset(self):
+        user = self.request.user
+        queryset = ChatMessage.objects.filter(Q(emisor=user) | Q(receptor=user))
+        other_user_id = self.request.query_params.get('other_user_id')
+        if other_user_id:
+            queryset = queryset.filter(
+                Q(emisor_id=other_user_id, receptor=user) |
+                Q(emisor=user, receptor_id=other_user_id)
+            )
+        return queryset.order_by('-hora_mensaje')
+
+    def list(self, request, *args, **kwargs):
+        user = request.user
+        queryset = self.filter_queryset(self.get_queryset())
+
+        unread = queryset.filter(receptor=user, visto=False)
+        if unread.exists():
+            unread.update(visto=True)
+
+        grouped = {}
+        for message in queryset.order_by('-hora_mensaje'):
+            other = message.receptor if message.emisor == user else message.emisor
+            if other is None:
+                continue
+
+            # sólo agrupar conversaciones con un business o si el usuario actual es business
+            if not _is_business_user(other) and not _is_business_user(user):
+                continue
+
+            key = str(other.id)
+            if key not in grouped:
+                grouped[key] = {
+                    'emisor': self._serialize_chat_user(user),
+                    'receptor': self._serialize_chat_user(other),
+                    'chat': []
+                }
+
+            chat_item = {
+                'id': str(message.id),
+                'mensaje_texto': message.mensaje_texto,
+                'hora_mensaje': message.hora_mensaje.isoformat(),
+                'typeuser': 'emisor' if message.emisor == user else 'receptor',
+            }
+            if message.emisor == user:
+                chat_item['visto'] = message.visto
+
+            grouped[key]['chat'].append(chat_item)
+
+        grouped_list = list(grouped.values())
+
+        page = self.paginate_queryset(grouped_list)
+        if page is not None:
+            return self.get_paginated_response(page)
+
+        return Response(grouped_list)
+
+    def retrieve(self, request, *args, **kwargs):
+        instance = self.get_object()
+        if instance.receptor == request.user and not instance.visto:
+            instance.visto = True
+            instance.save(update_fields=['visto'])
+        serializer = self.get_serializer(instance)
+        return Response(serializer.data)
     
+    @extend_schema(
+        summary="Obtener todos los mensajes recibidos por o enviados a un usuario específico",
+        #description="Lista todos los comentarios para un negocio dada por su ID.",
+        parameters=[
+            {
+                "name": "emisor_id",
+                "type": "string",
+                "required": True,
+                #"description": "ID de el negocio",
+                "in": "path"
+            }
+        ],
+        tags=['Chat'] # Asegúrate de que tenga el mismo tag para agrupar
+    )
+    @action( detail=False, methods=['get'], url_path='emisor/(?P<emisor_id>[^/.]+)', permission_classes=[IsAuthenticated])
+    def emisor(self, request, emisor_id=None):
+        user = request.user
+        try:
+            other_user = User.objects.get(id=emisor_id)
+        except (User.DoesNotExist, ValueError):
+            raise Http404("Usuario no encontrado o ID inválido.")
+
+        messages = ChatMessage.objects.filter(
+            Q(emisor_id=emisor_id, receptor=user) |
+            Q(emisor=user, receptor_id=emisor_id)
+        ).order_by('-hora_mensaje')
+
+        unread = messages.filter(receptor=request.user, visto=False)
+        if unread.exists():
+            unread.update(visto=True)
+
+        chat = []
+        for message in messages:
+            item = {
+                'id': str(message.id),
+                'mensaje_texto': message.mensaje_texto,
+                'hora_mensaje': message.hora_mensaje.isoformat(),
+                'typeuser': 'emisor' if message.emisor == request.user else 'receptor',
+            }
+            if message.emisor == request.user:
+                item['visto'] = message.visto
+            chat.append(item)
+
+        return Response([
+            {
+                'emisor': self._serialize_chat_user(user),
+                'receptor': self._serialize_chat_user(other_user),
+                'chat': chat,
+            }
+        ])
+
+    @extend_schema(
+        summary="Obtener resumen de conversaciones con el último mensaje",
+        tags=['Chat'],
+    )
+    @action(detail=False, methods=['get'], url_path='conversations', permission_classes=[IsAuthenticated])
+    def conversations(self, request):
+        user = request.user
+        queryset = self.filter_queryset(self.get_queryset())
+
+        last_conversations = {}
+        for message in queryset.order_by('-hora_mensaje'):
+            other = message.receptor if message.emisor == user else message.emisor
+            if other is None:
+                continue
+
+            if not _is_business_user(other) and not _is_business_user(user):
+                continue
+
+            key = str(other.id)
+            if key in last_conversations:
+                continue
+
+            ultimo_mensaje = {
+                'mensaje_texto': message.mensaje_texto,
+                'hora_mensaje': message.hora_mensaje.isoformat(),
+            }
+            last_conversations[key] = {
+                'receptor': self._serialize_chat_user(other),
+                'ultimo_mensaje': ultimo_mensaje,
+            }
+
+        result = list(last_conversations.values())
+        page = self.paginate_queryset(result)
+        if page is not None:
+            return self.get_paginated_response(page)
+
+        return Response(result)
+
+    def _serialize_chat_user(self, user):
+        if user is None:
+            return None
+
+        data = {
+            'id': str(user.id),
+            'profile_imagen': self._get_media_url(user.profile_imagen),
+        }
+
+        negocio = getattr(user, 'negocio', None)
+        if negocio:
+            name_business = ''
+            if isinstance(negocio, list) and len(negocio) > 0:
+                name_business = negocio[0].get('name_business', '') or ''
+            elif isinstance(negocio, dict):
+                name_business = negocio.get('name_business', '') or ''
+            data['name_business'] = name_business
+        else:
+            data['username'] = str(user.username) if getattr(user, 'username', None) else ''
+
+        return data
+
+    def _get_media_url(self, media_field):
+        if not media_field:
+            return None
+        try:
+            return media_field.url
+        except Exception:
+            return str(media_field)
+
+    def perform_create(self, serializer):
+        serializer.save(emisor=self.request.user)
+
+
 ###################################3333333#LOGIN###############################################
 @extend_schema(tags=['Login'], summary="Iniciar sesion",)
 class LoginView(generics.GenericAPIView):
@@ -1250,9 +1607,14 @@ class LoginView(generics.GenericAPIView):
         # Generar tokens
         refresh = RefreshToken.for_user(user)
         
+        # Determinar tipo de usuario
+        tipo_usuario = "negocio" if user.negocio else "cliente"
+        
         return Response({
             'refresh': str(refresh),
             'token': str(refresh.access_token),
+            'id': str(user.id),
+            'tipo_usuario': tipo_usuario,
         }, status=status.HTTP_200_OK)
 
 ###################################3333333#TOKEN##############################################
@@ -1274,4 +1636,5 @@ class TokenRefreshView(generics.GenericAPIView):
             except Exception as e:
                 return Response({'error': 'Token inválido'}, status=status.HTTP_400_BAD_REQUEST)
         return Response({'error': 'Se requiere el token de refresco'}, status=status.HTTP_400_BAD_REQUEST)
+
 

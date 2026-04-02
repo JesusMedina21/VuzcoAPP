@@ -2,7 +2,7 @@
 
 ## ¿De que se trata este proyecto/API?
 
-Este proyecto se trata de una API REST que es utilizada como Backend para la plataforma Barberia, permitiendo Registrar, Modificar, Eliminar y Listar los Productos. A traves de los metodos GET, POST, PATCH y DELETE.
+Este proyecto se trata de una API REST que es utilizada como Backend para la plataforma negocio, permitiendo Registrar, Modificar, Eliminar y Listar los Productos. A traves de los metodos GET, POST, PATCH y DELETE.
 
 ## Instalaciones necesarias
 
@@ -81,6 +81,13 @@ python manage.py runserver
 ```
 
 python3 manage.py runserver
+```
+
+## Si quieres correr el proyecto con Docker
+
+```
+
+docker compose up
 ```
 
 Te diriges a la url localhost:8000 en el navegador

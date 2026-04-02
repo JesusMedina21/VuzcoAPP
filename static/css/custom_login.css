@@ -1,0 +1,86 @@
+/* Ajustes para el formulario de login */
+.login-page {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+}
+
+.login-box {
+    width: 100%;
+    max-width: 400px;
+    margin: 0 auto;
+}
+
+.login-card {
+    background: white;
+    border-radius: 15px;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+    padding: 2rem;
+    margin: 1rem;
+}
+
+.login-logo {
+    text-align: center;
+    margin-bottom: 1.5rem;
+}
+
+.login-logo img {
+    max-width: 80px;
+    height: auto;
+}
+
+.input-group {
+    margin-bottom: 1rem;
+}
+
+.input-group-text {
+    background: #f8f9fa;
+    border: 1px solid #ced4da;
+}
+
+.btn-primary {
+    background: linear-gradient(45deg, #667eea, #764ba2);
+    border: none;
+    border-radius: 25px;
+    padding: 12px;
+    font-weight: 600;
+}
+
+.btn-primary:hover {
+    background: linear-gradient(45deg, #5a6fd8, #6a4190);
+    transform: translateY(-2px);
+    box-shadow: 0 5px 15px rgba(0,0,0,0.2);
+}
+
+/* Responsive adjustments */
+@media (max-width: 576px) {
+    .login-card {
+        margin: 0.5rem;
+        padding: 1.5rem;
+    }
+    
+    .login-box-msg {
+        font-size: 1.1rem;
+        margin-bottom: 1.5rem;
+    }
+    
+    .input-group {
+        margin-bottom: 0.8rem;
+    }
+}
+
+/* Mejoras visuales */
+.callout {
+    border-radius: 8px;
+    margin-bottom: 1rem;
+}
+
+.password-reset-link a {
+    color: #667eea;
+    text-decoration: none;
+}
+
+.password-reset-link a:hover {
+    text-decoration: underline;
+}

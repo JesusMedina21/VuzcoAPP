@@ -1,0 +1,48 @@
+##Produccion
+
+version: '3.9'
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    depends_on:
+      - redis
+    environment:
+      SECRET_KEY: ${SECRET_KEY}
+      DEBUG: ${DEBUG:-False}
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS}
+      MONGODB_URI: ${MONGODB_URI}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+
+##Desarrollo
+
+#services: 
+#  # Django app
+#  django:
+#    container_name: django
+#    build: .
+#    volumes:
+#      - .:/app # este nombre app, es solo coincidencia con dockerfile
+#    ports: 
+#      - 8000:8000
+#    depends_on:
+#      - redis_db
+#    environment:
+#      SECRET_KEY: ${SECRET_KEY:-changeme}
+#      DEBUG: ${DEBUG:-False}
+#      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-localhost,127.0.0.1}
+#      MONGODB_URI: ${MONGODB_URI}
+#      REDIS_URL: ${REDIS_URL:-redis://redis_db:6379}
+#  # Redis
+#  redis_db:
+#    image: redis
+#    container_name: redis_vuzco

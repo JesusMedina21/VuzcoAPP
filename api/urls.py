@@ -12,29 +12,28 @@ from djoser.views import UserViewSet
 #endpoints   
 router = routers.DefaultRouter()
 router.register(r'clients', views.ClienteViewSet, basename='clientes')
-router.register(r'barbers', views.BarberiaViewSet, basename='barberias')
+router.register(r'business', views.NegocioViewSet, basename='negocios')
 router.register(r'comments', views.ComentarioViewSet)
-router.register(r'turnos', views.TurnoViewSet)
 router.register(r'servicios', views.ServicioViewSet)
+router.register(r'chat/messages', views.ChatMessageViewSet, basename='chatmessages')
 
 urlpatterns = [
     path('', include(router.urls)),
 
     #endpoints   
-    path('barbers/google/', ConvertGoogleUserToBarberiaView.as_view(), name='convert-google-to-barber'),
-    path('turnos/old/<str:token>/', views.delete_old_turnos_view, name='old_turnos'),
+    path('business/google/', ConvertGoogleUserTonegocioView.as_view(), name='convert-google-to-business'),
     # Endpoints personalizados de Djoser
     path('auth/activate/', CustomUserViewSet.as_view({'post': 'activation'}), name='user-activation'),
     path('auth/activate/new-email/', ActivarNuevoEmailView.as_view(), name='activation-new-email'),
-    path('auth/reset/email/', UserViewSet.as_view({'post': 'reset_username'}), name='email-reset'),
+    path('auth/reset/email/', CustomUserViewSet.as_view({'post': 'reset_username'}), name='email-reset'),
     path('auth/reset/email/confirm/', ConfirmarEmail.as_view(), name='reset-email-confirm'), 
-    path('auth/reset/password/', UserViewSet.as_view({'post': 'reset_password'}), name='password-reset'),
-    path('auth/reset/password/confirm/', UserViewSet.as_view({'post': 'reset_password_confirm'}), name='password-reset-confirm'),
+    path('auth/reset/password/', CustomUserViewSet.as_view({'post': 'reset_password'}), name='password-reset'),
+    path('auth/reset/password/confirm/', CustomUserViewSet.as_view({'post': 'reset_password_confirm'}), name='password-reset-confirm'),
+    path('auth/o/login/google-oauth2-documentacion/', views.GoogleOAuth2LoginDocsView.as_view(), name='google-oauth2-doc'),
+    path('oauth-error/', OAuthErrorView.as_view(), name='oauth-error'),
     path('auth/o/', include('social_django.urls', namespace='social')),  # << importante
     #La ruta de auth/o es api/auth/o/login/google-oauth2/
-    
-   
-    
+    #path('chat/websocket-info/', views.ChatWebsocketInfoView.as_view(), name='chat-websocket-info'),
 ]
 if settings.DEBUG:
     urlpatterns += static(settings.STATIC_URL, document_root=settings.STATIC_ROOT)

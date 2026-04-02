@@ -4,7 +4,7 @@ from django.contrib import admin
 class ApiConfig(AppConfig):
     default_auto_field = 'django_mongodb_backend.fields.ObjectIdAutoField'  
     name = 'api'
-    verbose_name = 'Barberstein Modelos'
+    verbose_name = 'Vuzco Modelos'
 
     def ready(self):
         import api.signals  # Asegúrate de crear este archivo

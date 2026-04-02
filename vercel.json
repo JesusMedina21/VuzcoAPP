@@ -1,13 +1,13 @@
 {
     "builds": [{
-        "src": "barberstein/wsgi.py",
+        "src": "vuzco/wsgi.py",
         "use": "@vercel/python",
         "config": { "maxLambdaSize": "15mb", "runtime": "python3.12" }
     }],
     "routes": [
         {
             "src": "/(.*)",
-            "dest": "barberstein/wsgi.py"
+            "dest": "vuzco/wsgi.py"
         }
     ]
 }

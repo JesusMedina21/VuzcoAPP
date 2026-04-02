@@ -12,11 +12,11 @@ from decouple import config
 class AutoCleanMongoMixin:
     """Mezcla que elimina campos nulos o vacíos de documentos Mongo después de save()."""
 
-    MONGO_URI = "mongodb+srv://barberstein:Df5XI8jWimb5hIaQ@cluster0.xvyzd3u.mongodb.net/Barberia?retryWrites=true&w=majority&appName=Cluster0"
-    DB_NAME = "Barberia"
+    MONGO_URI = config('MONGODB_URI')
+    DB_NAME = config('MONGODB_NAME')
     COLLECTION_NAME = "api_user"
 
-    CLEAN_FIELDS = []
+    CLEAN_FIELDS = ['username', 'first_name', 'last_name', 'biometric', 'negocio', 'pending_email', 'profile_imagen', 'banner_imagen', 'ubicacion_coordenadas', 'ciudad_coordenadas']
 
     def mongo_clean(self):
         unset_fields = {}
@@ -86,6 +86,79 @@ class AutoCleanMongoMixin:
         else:
             logger.info("No hay campos para eliminar.")
 
+
+class BannerCloudinaryStorage(MediaCloudinaryStorage):
+    """Storage para fotos de portada- Cuenta Principal"""
+    
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Configurar Cloudinary para la cuenta principal
+        self.cloud_name = config('CLOUDINARY_BANNER_CLOUD_NAME')
+        self.api_key = config('CLOUDINARY_BANNER_API_KEY')
+        self.api_secret = config('CLOUDINARY_BANNER_API_SECRET')
+        
+        cloudinary.config(
+            cloud_name=self.cloud_name,
+            api_key=self.api_key,
+            api_secret=self.api_secret
+        )
+    
+    def _save(self, name, content):
+        """Sobrescribir el método save para usar la cuenta correcta.
+
+        En las pruebas previas el campo `name` venía con el nombre del archivo
+        (incluyendo la extensión) y eso terminaba formando un `public_id`
+        como `banner_images/archivo.jpg`.  Cuando se genera la URL Django
+        incluye esa extensión, mientras que los `profile_imagen` obtenían
+        identificadores aleatorios sin extensión.  Para que el comportamiento
+        sea idéntico al de los perfiles, simplemente no usamos `name` como
+        `public_id`.
+
+        Cloudinary genera un identificador aleatorio cuando no se lo pasas, y
+        se coloca dentro de la carpeta especificada con el parámetro
+        `folder`.  De esa manera las URLs quedan como
+        `banner_images/abcd1234` sin sufijo ".jpg".
+        """
+        # Configurar Cloudinary para la cuenta principal
+        cloudinary.config(
+            cloud_name=self.cloud_name,
+            api_key=self.api_key,
+            api_secret=self.api_secret
+        )
+
+        # folder de destino; Cloudinary antepone automáticamente la barra
+        folder = 'banner_images/'
+
+        # subir sin public_id explícito para que Cloudinary genere uno random
+        result = cloudinary.uploader.upload(
+            content.file,
+            folder=folder,
+            overwrite=True,
+            resource_type="image"
+        )
+
+        # like ProfileStorage, return URL so the model field holds a full link
+        return result.get('secure_url') or result.get('url')
+
+    def url(self, name):
+        """Return URL always using the banner account, ignoring global state."""
+        import cloudinary.utils
+        if not name:
+            return ''
+        if name.startswith(('http://', 'https://')):
+            return name
+        cloudinary.config(
+            cloud_name=self.cloud_name,
+            api_key=self.api_key,
+            api_secret=self.api_secret
+        )
+        return cloudinary.utils.cloudinary_url(
+            name,
+            cloud_name=self.cloud_name,
+            secure=True
+        )[0]
+
+
 class ProfileCloudinaryStorage(MediaCloudinaryStorage):
     """Storage para fotos de perfil - Cuenta Principal"""
     
@@ -122,8 +195,27 @@ class ProfileCloudinaryStorage(MediaCloudinaryStorage):
             overwrite=True,
             resource_type="image"
         )
-        
-        return result['public_id']
+        # return secure URL so the field stores a usable link including version
+        return result.get('secure_url') or result.get('url')
+
+    def url(self, name):
+        """Always build a URL using the profile cloud, ignoring global state."""
+        import cloudinary.utils
+        if not name:
+            return ''
+        if name.startswith(('http://', 'https://')):
+            return name
+        # when storage saves, it returns a public_id; combine with folder
+        cloudinary.config(
+            cloud_name=self.cloud_name,
+            api_key=self.api_key,
+            api_secret=self.api_secret
+        )
+        return cloudinary.utils.cloudinary_url(
+            name,
+            cloud_name=self.cloud_name,
+            secure=True
+        )[0]
 
 class ServiciosCloudinaryStorage(MediaCloudinaryStorage):
     """Storage para imágenes de servicios - Cuenta Secundaria"""
