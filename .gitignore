@@ -2,7 +2,7 @@
 # http://git-scm.com/docs/gitignore
 
 /venv
-.env
+
 *~
 *.sw[mnpcod]
 .tmp

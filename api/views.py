@@ -9,6 +9,8 @@ from django.views import View
 from api.models import *
 # JWT
 from rest_framework.permissions import IsAuthenticated, AllowAny, IsAdminUser
+from django.apps import apps
+from django.conf import settings
 
 #DRF SPECTACULAR
 from drf_spectacular.utils import extend_schema, extend_schema_view, OpenApiExample, OpenApiParameter
@@ -23,6 +25,7 @@ from rest_framework_simplejwt.views import TokenRefreshView as BaseTokenRefreshV
 from django.db.models import Q  #Esta importacion sirve para realizar consultas complejas a la base de datos
 from djoser import signals
 from djoser.conf import settings as djoser_settings
+import logging
 from djoser.views import UserViewSet
 
 from math import radians, sin, cos, sqrt, atan2
@@ -41,6 +44,7 @@ from collections import defaultdict
 
 from .pagination import * 
 from drf_spectacular.types import OpenApiTypes
+from user_agents import parse
 
 VERCEL_API_KEY_SECRET = "ae24638ce08a743c58aea8a35931e76464d8d0a15fed29fc696cfe2bf9806f2f"
 
@@ -405,7 +409,14 @@ class ClienteViewSet(viewsets.ModelViewSet):
         )
         if djoser_settings.SEND_ACTIVATION_EMAIL:
             context = {"user": user}
-            djoser_settings.EMAIL.activation(self.request, context).send([user.email])
+            logger = logging.getLogger(__name__)
+            logger.info("Attempting to send activation email to %s", user.email)
+            try:
+                djoser_settings.EMAIL.activation(self.request, context).send([user.email])
+                logger.info("Activation email sent successfully to %s", user.email)
+            except OSError as e:
+                logger.error("Failed to send activation email to %s: %s", user.email, str(e))
+                # Continue without failing the request
         # ************************************************************
         
         return Response(ClienteSerializer(user).data, status=status.HTTP_201_CREATED)
@@ -929,7 +940,14 @@ class NegocioViewSet(viewsets.ModelViewSet):
         )
         if djoser_settings.SEND_ACTIVATION_EMAIL:
             context = {"user": user}
-            djoser_settings.EMAIL.activation(self.request, context).send([user.email])
+            logger = logging.getLogger(__name__)
+            logger.info("Attempting to send activation email to %s", user.email)
+            try:
+                djoser_settings.EMAIL.activation(self.request, context).send([user.email])
+                logger.info("Activation email sent successfully to %s", user.email)
+            except OSError as e:
+                logger.error("Failed to send activation email to %s: %s", user.email, str(e))
+                # Continue without failing the request
     
         return Response(negocioSerializer(user).data, status=status.HTTP_201_CREATED)
 
@@ -1371,10 +1389,7 @@ class ChatWebsocketInfoView(APIView):
         })
 
 @extend_schema_view(
-    list=extend_schema(
-        tags=['Chat'],
-        summary="Obtener todos los mensajes relacionados con el usuario autenticado",
-        ),
+    list=extend_schema(exclude=True),
     retrieve=extend_schema(
         #Retrieve son las consultas Get con ID
         tags=['Chat'], 
@@ -1395,10 +1410,19 @@ class ChatWebsocketInfoView(APIView):
         summary="Eliminar mi mensaje",
         ),
 )
-
 class ChatMessageViewSet(viewsets.ModelViewSet):
     serializer_class = ChatMessageSerializer
     permission_classes = [IsAuthenticated, ChatMessageParticipantPermission]
+    pagination_class = ChatPagination
+
+    def list(self, request, *args, **kwargs):
+        return Response(
+            {
+                "error": "Este endpoint no se puede usar",
+                "message": "Usa /api/chat/messages/conversations/ para ver conversaciones o /api/chat/messages/emisor/{id}/ para ver mensajes con un usuario específico"
+            },
+            status=status.HTTP_405_METHOD_NOT_ALLOWED
+        )
 
     def get_queryset(self):
         user = self.request.user
@@ -1410,51 +1434,6 @@ class ChatMessageViewSet(viewsets.ModelViewSet):
                 Q(emisor=user, receptor_id=other_user_id)
             )
         return queryset.order_by('-hora_mensaje')
-
-    def list(self, request, *args, **kwargs):
-        user = request.user
-        queryset = self.filter_queryset(self.get_queryset())
-
-        unread = queryset.filter(receptor=user, visto=False)
-        if unread.exists():
-            unread.update(visto=True)
-
-        grouped = {}
-        for message in queryset.order_by('-hora_mensaje'):
-            other = message.receptor if message.emisor == user else message.emisor
-            if other is None:
-                continue
-
-            # sólo agrupar conversaciones con un business o si el usuario actual es business
-            if not _is_business_user(other) and not _is_business_user(user):
-                continue
-
-            key = str(other.id)
-            if key not in grouped:
-                grouped[key] = {
-                    'emisor': self._serialize_chat_user(user),
-                    'receptor': self._serialize_chat_user(other),
-                    'chat': []
-                }
-
-            chat_item = {
-                'id': str(message.id),
-                'mensaje_texto': message.mensaje_texto,
-                'hora_mensaje': message.hora_mensaje.isoformat(),
-                'typeuser': 'emisor' if message.emisor == user else 'receptor',
-            }
-            if message.emisor == user:
-                chat_item['visto'] = message.visto
-
-            grouped[key]['chat'].append(chat_item)
-
-        grouped_list = list(grouped.values())
-
-        page = self.paginate_queryset(grouped_list)
-        if page is not None:
-            return self.get_paginated_response(page)
-
-        return Response(grouped_list)
 
     def retrieve(self, request, *args, **kwargs):
         instance = self.get_object()
@@ -1468,13 +1447,27 @@ class ChatMessageViewSet(viewsets.ModelViewSet):
         summary="Obtener todos los mensajes recibidos por o enviados a un usuario específico",
         #description="Lista todos los comentarios para un negocio dada por su ID.",
         parameters=[
-            {
-                "name": "emisor_id",
-                "type": "string",
-                "required": True,
-                #"description": "ID de el negocio",
-                "in": "path"
-            }
+            OpenApiParameter(
+                name="emisor_id",
+                type=str,
+                location=OpenApiParameter.PATH,
+                required=True,
+                description="ID del usuario"
+            ),
+            OpenApiParameter(
+                name="page",
+                type=int,
+                location=OpenApiParameter.QUERY,
+                required=False,
+                description="Número de página"
+            ),
+            OpenApiParameter(
+                name="limit",
+                type=int,
+                location=OpenApiParameter.QUERY,
+                required=False,
+                description="Número de mensajes por página (máximo 100)"
+            )
         ],
         tags=['Chat'] # Asegúrate de que tenga el mismo tag para agrupar
     )
@@ -1507,16 +1500,45 @@ class ChatMessageViewSet(viewsets.ModelViewSet):
                 item['visto'] = message.visto
             chat.append(item)
 
+        # Aplicar paginación a la lista de mensajes
+        paginator = ChatPagination()
+        paginated_chat = paginator.paginate_queryset(chat, request)
+        
         return Response([
             {
                 'emisor': self._serialize_chat_user(user),
                 'receptor': self._serialize_chat_user(other_user),
-                'chat': chat,
+                'pagination': {
+                    'next': paginator.get_next_link(),
+                    'previous': paginator.get_previous_link(),
+                    'count': paginator.page.paginator.count if paginator.page else len(chat),
+                    'page_size': paginator.page_size,
+                    'total_pages': paginator.page.paginator.num_pages if paginator.page else 1,
+                    'current_page': paginator.page.number if paginator.page else 1,
+                },
+                'chat': paginated_chat,
             }
         ])
 
     @extend_schema(
         summary="Obtener resumen de conversaciones con el último mensaje",
+        description="Lista todas las conversaciones del usuario con el último mensaje de cada una. Incluye paginación.",
+        parameters=[
+            OpenApiParameter(
+                name="page",
+                type=int,
+                location=OpenApiParameter.QUERY,
+                required=False,
+                description="Número de página"
+            ),
+            OpenApiParameter(
+                name="limit",
+                type=int,
+                location=OpenApiParameter.QUERY,
+                required=False,
+                description="Número de conversaciones por página (máximo 100)"
+            )
+        ],
         tags=['Chat'],
     )
     @action(detail=False, methods=['get'], url_path='conversations', permission_classes=[IsAuthenticated])
@@ -1540,6 +1562,8 @@ class ChatMessageViewSet(viewsets.ModelViewSet):
             ultimo_mensaje = {
                 'mensaje_texto': message.mensaje_texto,
                 'hora_mensaje': message.hora_mensaje.isoformat(),
+                'leido': bool(message.visto),
+                'typeuser': 'emisor' if message.emisor == user else 'receptor',
             }
             last_conversations[key] = {
                 'receptor': self._serialize_chat_user(other),
@@ -1602,7 +1626,26 @@ class LoginView(generics.GenericAPIView):
                 {"detail": "Tu cuenta no esta activa porque no has confirmado tu email. Por favor, revisa tu correo electrónico para activarla."},
                 status=status.HTTP_401_UNAUTHORIZED
             )
-        # ----------------------------------
+
+        # Capturar info del dispositivo automáticamente desde User-Agent
+        user_agent_string = request.META.get('HTTP_USER_AGENT', '')
+        registration_id = serializer.validated_data.get('registration_id')
+        device_id = serializer.validated_data.get('device_id')
+        device_type = serializer.validated_data.get('type')
+        device_name = serializer.validated_data.get('name')
+
+        device_info = self._get_device_info(user_agent_string, registration_id=registration_id)
+        device_id = device_id or device_info.get('device_id')
+        device_type = device_type or device_info.get('device_type')
+        device_name = device_name or device_info.get('device_name')
+
+        self._register_device(
+            user,
+            registration_id,
+            device_id=device_id,
+            device_type=device_type,
+            device_name=device_name,
+        )
         
         # Generar tokens
         refresh = RefreshToken.for_user(user)
@@ -1616,6 +1659,71 @@ class LoginView(generics.GenericAPIView):
             'id': str(user.id),
             'tipo_usuario': tipo_usuario,
         }, status=status.HTTP_200_OK)
+
+    def _get_device_info(self, user_agent_string, registration_id=None):
+        import hashlib
+
+        if user_agent_string:
+            device_id = hashlib.md5(user_agent_string.encode()).hexdigest()[:16]
+            user_agent = parse(user_agent_string)
+        elif registration_id:
+            device_id = hashlib.md5(registration_id.encode()).hexdigest()[:16]
+            user_agent = None
+        else:
+            return {}
+
+        device_name = 'Unknown device'
+        device_type = 'web'
+
+        if user_agent:
+            device_name = f"{user_agent.browser.family} {user_agent.browser.version_string} on {user_agent.os.family} {user_agent.os.version_string}"
+            os_family = (user_agent.os.family or '').lower()
+
+            if 'android' in os_family:
+                device_type = 'android'
+            elif 'ios' in os_family or 'iphone' in os_family or 'ipad' in os_family:
+                device_type = 'ios'
+            else:
+                device_type = 'web'
+
+        return {
+            'device_id': device_id,
+            'device_type': device_type,
+            'device_name': device_name,
+        }
+
+    def _register_device(self, user, registration_id=None, device_id=None, device_type=None, device_name=None):
+        import hashlib
+
+        if not registration_id:
+            return
+
+        if not device_id:
+            device_id = hashlib.md5(registration_id.encode()).hexdigest()[:16]
+
+        # Usa el modelo FCM personalizado configurado en settings
+        device_model = apps.get_model(settings.FCM_DJANGO_FCMDEVICE_MODEL)
+
+        device = device_model.objects.filter(
+            models.Q(user=user, device_id=device_id) | models.Q(registration_id=registration_id)
+        ).first()
+
+        if device:
+            device.user = user
+            device.registration_id = registration_id
+            device.type = device_type or device.type
+            device.name = device_name or device.name
+            device.active = True
+            device.save()
+        else:
+            device_model.objects.create(
+                user=user,
+                device_id=device_id,
+                registration_id=registration_id,
+                type=device_type or 'web',
+                name=device_name,
+                active=True,
+            )
 
 ###################################3333333#TOKEN##############################################
 @extend_schema(tags=['Token'], request=RefreshTokenSerializer, summary="Reiniciar token",)

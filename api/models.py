@@ -7,6 +7,9 @@ import logging # Importa logging
 
 logger = logging.getLogger(__name__) # Inicializa el logger
 
+import django_mongodb_backend.fields
+from fcm_django.models import AbstractFCMDevice
+
 from django.db import models
 from django.conf import settings # Importar settings para AUTH_USER_MODEL
 from datetime import datetime, timedelta
@@ -244,3 +247,18 @@ class ChatMessage(models.Model):
         emisor = self.emisor or 'Desconocido'
         receptor = self.receptor or 'Desconocido'
         return f"[{self.hora_mensaje}] {emisor} -> {receptor}: {self.mensaje_texto[:50]}"
+
+
+class CustomFCMDevice(AbstractFCMDevice):
+    id = django_mongodb_backend.fields.ObjectIdAutoField(
+        verbose_name="ID",
+        primary_key=True,
+        auto_created=True,
+        serialize=False,
+    )
+
+    class Meta:
+        app_label = "api"
+        db_table = "api_customfcmdevice"
+        verbose_name = "FCM Dispositivos"
+        verbose_name_plural = "FCM Dispositivos"

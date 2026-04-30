@@ -26,3 +26,7 @@ class ComentarioPagination(DynamicPageNumberPagination):
 
 class ServicioPagination(DynamicPageNumberPagination):
     page_size = 6  # Default para servicios
+
+class ChatPagination(DynamicPageNumberPagination):
+    page_size = 10  # Default para mensajes de chat (últimos 50 mensajes)
+    max_page_size = 100  # Máximo 100 mensajes por página

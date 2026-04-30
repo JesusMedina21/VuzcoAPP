@@ -1,10 +1,11 @@
 ############EL ARCHIVO ROUTING ES PARA LA LIBRERIA CHANNELS
 
 from django.urls import path
-from .consumers import ChatConsumer
+from .consumers import ChatConsumer, ConversationConsumer
 
 websocket_urlpatterns = [
     path('ws/chat/<receptor_id>/', ChatConsumer.as_asgi()),
+    path('ws/conversations/', ConversationConsumer.as_asgi()),
     #ESE NOMBRE DE RECEPTOR_ID ES EL QUE SE USA EN EL CONSUMER 
     # PARA OBTENER EL ID DEL RECEPTOR Y ASI SABER A QUIEN LE LLEGA EL MENSAJE
     # Y ADEMAS ES PORQUE ESTA REGISTRADO EN EL URLS.PY CON ESA RUTA, ASI QUE DEBE COINCIDIR

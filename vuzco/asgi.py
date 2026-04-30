@@ -4,6 +4,7 @@ import django
 django.setup()
 
 from urllib.parse import parse_qs
+from asgiref.sync import sync_to_async
 
 from django.core.asgi import get_asgi_application
 from channels.middleware import BaseMiddleware
@@ -30,14 +31,17 @@ class JWTAuthMiddleware(BaseMiddleware):
         token_list = query_params.get('token')
         if token_list:
             raw_token = token_list[0]
-        if raw_token and raw_token.startswith('Bearer '):
+        if raw_token and raw_token.startswith('JWT '):
+            raw_token = raw_token.split(' ', 1)[1]
+        elif raw_token and raw_token.startswith('Bearer '):
             raw_token = raw_token.split(' ', 1)[1]
 
         if raw_token:
             try:
-                validated_token = self.jwt_auth.get_validated_token(raw_token)
-                scope['user'] = self.jwt_auth.get_user(validated_token)
-            except Exception:
+                validated_token = await sync_to_async(self.jwt_auth.get_validated_token)(raw_token)
+                scope['user'] = await sync_to_async(self.jwt_auth.get_user)(validated_token)
+            except Exception as e:
+                print(f"JWT validation error: {e}")
                 from django.contrib.auth.models import AnonymousUser
                 scope['user'] = AnonymousUser()
 

@@ -20,6 +20,12 @@ from datetime import timedelta
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+# Initialize Firebase Admin SDK
+import firebase_admin
+from firebase_admin import credentials
+cred = credentials.Certificate(os.path.join(BASE_DIR, 'credenciales-firebase-adminsdk.json'))
+firebase_admin.initialize_app(cred)
+
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
@@ -37,7 +43,7 @@ ALLOWED_HOSTS = config('ALLOWED_HOSTS', cast=Csv())
 
 INSTALLED_APPS = [
     'jazzmin',
-    'daphne',
+    'daphne', #Servidor ASGI ( Asincrono) para WebSocket (chat en tiempo real)
     'vuzco.apps.MongoAdminConfig',
     'vuzco.apps.MongoAuthConfig',
     'vuzco.apps.MongoContentTypesConfig',
@@ -49,6 +55,7 @@ INSTALLED_APPS = [
     'cloudinary', #storage
     'cloudinary_storage', #storage
     'djoser', # envio de emails
+    'fcm_django',
     'rest_framework', # api
     'rest_framework_simplejwt', # api con jwt 
     'drf_spectacular', #tiene varias funciones una de ellas es la documentacion de swagger
@@ -235,7 +242,7 @@ JAZZMIN_UI_TWEAKS = {
 WSGI_APPLICATION = 'vuzco.wsgi.application'
 ASGI_APPLICATION = 'vuzco.asgi.application'
 
-REDIS_URL = config('REDIS_URL', default='redis://redis_db:6379')
+REDIS_URL = config('REDIS_URL', default='redis://localhost:6379')
 
 CHANNEL_LAYERS = {
     'default': {
@@ -336,12 +343,15 @@ CLOUDINARY_BANNER = {
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django_mongodb_backend.fields.ObjectIdAutoField'
-
+#Las MIGRATION_MODULES SON MIGRACIONES CREADAS MANUAALMENTE COMO SOCIAL_DJANGO Y FCM_DJANGO QUE SON LIBRERIAS DE TERCEROS
+# Y POR DICHO MOTIVO, AL SER DE TERCERO NO PUEDO MODIFICAR DIRECTAMENTE LA LIBRERIA, ENTONCES POR LO TANTO
+#MODIFICO MANUALMENTE MI PROPIA MIGRACION PARA QUE SEA COMPATIBLE CON MONGO Y ASI EVITAR ERRORES DE MIGRACION CUANDO EJECUTO EL COMANDO "python manage.py migrate"
 MIGRATION_MODULES = {
     'admin': 'mongo_migrations.admin',
     'auth': 'mongo_migrations.auth',
     'contenttypes': 'mongo_migrations.contenttypes',
     'social_django': 'mongo_migrations.social_django', #Creada manualmente
+    'fcm_django': 'mongo_migrations.fcm_django',
 }
 
 #Aqui indico y permito que URL pueda accedar a la api
@@ -350,6 +360,9 @@ CORS_ALLOWED_ORIGINS = config('CORS_ALLOWED_ORIGINS', cast=Csv())
 
 # ✅ Permitir redirecciones a protocolos personalizados (vuzco://)
 ALLOWED_REDIRECT_PROTOCOLS = ['http', 'https', 'vuzco']
+
+# Modelo personalizado de FCMDevice para compatibilidad con MongoDB
+FCM_DJANGO_FCMDEVICE_MODEL = 'api.CustomFCMDevice'
 
 # ✅ Para versiones más recientes de Django, también necesitas:
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
@@ -564,11 +577,11 @@ SOCIAL_AUTH_FACEBOOK_PROFILE_EXTRA_PARAMS = {
 #Configuracion de Swagger
 SPECTACULAR_SETTINGS = {
     'TITLE': 'Vuzco',
-    'DESCRIPTION': 'API REST utilizada como Backend para la Red Social Vuzco. Desarrollada en Django Rest, MongoDB, autenticacion mediante JWT, envio de correos, autenticacion con Google, almacenamiento de Imagenes con Cloudinary y despliegue en Vercel',
+    'DESCRIPTION': 'API REST utilizada como Backend para la Red Social Vuzco. Desarrollada en Django Rest, MongoDB, Docker, Redis, autenticacion mediante JWT, envio de correos, autenticacion con Google, almacenamiento de Imagenes con Cloudinary, chat en tiempo real y despliegue en Vercel',
     'VERSION': '1.0.0',
     'CONTACT': {
         'name': 'Vuzco',
-        'email': 'jesusmedina0921@gmail.com',
+        'email': 'info@vuzco.ebiru.tech',
         'url': 'https://vuzco.vercel.app',
     },
     #Orden de los tags en Swagger
@@ -609,3 +622,17 @@ PWA_APP_ICONS = [
 ]
 PWA_APP_DIR = 'ltr'
 PWA_APP_LANG = 'es'
+
+
+FCM_DJANGO_SETTINGS = {
+        "APP_VERBOSE_NAME": "Dispositivos",
+         # Your firebase API KEY
+        "FCM_SERVER_KEY": config('FCM_SERVER_KEY'),
+         # true if you want to have only one active device per registered user at a time
+         # default: False
+        "ONE_DEVICE_PER_USER": False,
+         # devices to which notifications cannot be sent,
+         # are deleted upon receiving error response from FCM
+         # default: False
+        "DELETE_INACTIVE_DEVICES": True,
+}

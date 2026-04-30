@@ -1889,6 +1889,11 @@ class ServicioSerializer(serializers.ModelSerializer):
 class LoginSerializer(serializers.Serializer):
     email = serializers.EmailField()
     password = serializers.CharField(write_only=True)
+    registration_id = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    device_id = serializers.CharField(required=False, allow_blank=True)
+    type = serializers.CharField(required=False, allow_blank=True)
+    name = serializers.CharField(required=False, allow_blank=True)
+
     def validate(self, attrs):
         email = attrs.get('email')
         password = attrs.get('password')

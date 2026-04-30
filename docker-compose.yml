@@ -24,7 +24,6 @@ services:
     restart: unless-stopped
 
 ##Desarrollo
-
 #services: 
 #  # Django app
 #  django:

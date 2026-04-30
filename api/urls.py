@@ -29,7 +29,7 @@ urlpatterns = [
     path('auth/reset/email/confirm/', ConfirmarEmail.as_view(), name='reset-email-confirm'), 
     path('auth/reset/password/', CustomUserViewSet.as_view({'post': 'reset_password'}), name='password-reset'),
     path('auth/reset/password/confirm/', CustomUserViewSet.as_view({'post': 'reset_password_confirm'}), name='password-reset-confirm'),
-    path('auth/o/login/google-oauth2-documentacion/', views.GoogleOAuth2LoginDocsView.as_view(), name='google-oauth2-doc'),
+    #path('auth/o/login/google-oauth2-documentacion/', views.GoogleOAuth2LoginDocsView.as_view(), name='google-oauth2-doc'),
     path('oauth-error/', OAuthErrorView.as_view(), name='oauth-error'),
     path('auth/o/', include('social_django.urls', namespace='social')),  # << importante
     #La ruta de auth/o es api/auth/o/login/google-oauth2/
